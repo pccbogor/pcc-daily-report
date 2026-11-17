@@ -8,7 +8,7 @@
   var PIN_KEY = 'pcc_mgr_pin';
   var BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
   var app = document.getElementById('app');
-  var state = { data: null, pettyEdit: null, pjItems: null, pjFiles: {}, pettyFiles: [] };
+  var state = { data: null, pettyEdit: null, pjItems: null };
 
   // ---------------- helpers ----------------
   function $(s, el) { return (el || document).querySelector(s); }
@@ -72,6 +72,72 @@
   }
   function packFiles(list) { return Promise.all(Array.prototype.slice.call(list || []).map(shrink)); }
   function fileNames(list) { return Array.prototype.slice.call(list || []).map(function (f) { return f.name; }).join(', '); }
+
+  // ---------------- attachment picker: camera (phone or webcam) + file chooser ----------------
+  var PICK = {};
+  function pickerHtml(key) {
+    return '<div class="picker" data-picker="' + key + '">' +
+      '<div class="pick-btns"><button type="button" class="chip-btn" data-cam>📷 Kamera</button><button type="button" class="chip-btn" data-pick>📁 Pilih File</button></div>' +
+      '<input type="file" hidden data-in accept="image/*,application/pdf" multiple>' +
+      '<input type="file" hidden data-camin accept="image/*" capture="environment">' +
+      '<div class="thumbs"></div></div>';
+  }
+  function clearPicks(prefix) { Object.keys(PICK).forEach(function (k) { if (k.indexOf(prefix) === 0) delete PICK[k]; }); }
+  function isTouch() { return (window.matchMedia && matchMedia('(pointer: coarse)').matches) || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent); }
+  function bindPickers(root) {
+    $$('[data-picker]', root).forEach(function (el) {
+      var key = el.dataset.picker;
+      PICK[key] = PICK[key] || [];
+      var draw = function () {
+        $('.thumbs', el).innerHTML = PICK[key].map(function (f, i) {
+          var img = /^image\//.test(f.type) && !/heic|heif/i.test(f.type) ? '<img src="' + URL.createObjectURL(f) + '" alt="">' : '<span class="doc">' + (/pdf/i.test(f.type) ? 'PDF' : 'FOTO') + '</span>';
+          return '<div class="thumb" title="' + esc(f.name) + '">' + img + '<button type="button" data-x="' + i + '" aria-label="Hapus lampiran">×</button></div>';
+        }).join('');
+        $$('[data-x]', el).forEach(function (b) { b.onclick = function () { PICK[key].splice(Number(b.dataset.x), 1); draw(); }; });
+      };
+      var add = function (files) { Array.prototype.forEach.call(files || [], function (f) { PICK[key].push(f); }); draw(); };
+      $('[data-in]', el).onchange = function () { add(this.files); this.value = ''; };
+      $('[data-camin]', el).onchange = function () { add(this.files); this.value = ''; };
+      $('[data-pick]', el).onclick = function () { $('[data-in]', el).click(); };
+      $('[data-cam]', el).onclick = function () {
+        if (isTouch() || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return $('[data-camin]', el).click();
+        openCamera(function (file) { add([file]); }, function () { $('[data-camin]', el).click(); });
+      };
+      draw();
+    });
+  }
+  /** Webcam / laptop camera in a modal; each shot becomes a JPEG File. */
+  function openCamera(onShot, onFail) {
+    var facing = 'environment', stream = null, shots = 0;
+    var bg = document.createElement('div');
+    bg.className = 'cam-bg';
+    bg.innerHTML = '<div class="cam"><video playsinline autoplay muted></video><div class="cam-info">Arahkan kamera ke struk / nota</div>' +
+      '<div class="cam-btns"><button type="button" class="chip-btn" data-flip>🔄 Ganti kamera</button><button type="button" class="btn" data-shot>📸 Ambil foto</button><button type="button" class="chip-btn" data-done>Selesai</button></div></div>';
+    document.body.appendChild(bg);
+    var video = $('video', bg);
+    var stop = function () { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; };
+    var close = function () { stop(); bg.remove(); };
+    var start = function () {
+      stop();
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1920 } }, audio: false }).then(function (s) {
+        stream = s; video.srcObject = s;
+      }, function () { close(); toast('Kamera tidak bisa dibuka. Pilih foto dari file.', 'err'); if (onFail) onFail(); });
+    };
+    $('[data-flip]', bg).onclick = function () { facing = facing === 'environment' ? 'user' : 'environment'; start(); };
+    $('[data-done]', bg).onclick = close;
+    bg.onclick = function (e) { if (e.target === bg) close(); };
+    $('[data-shot]', bg).onclick = function () {
+      if (!video.videoWidth) return;
+      var c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      c.toBlob(function (blob) {
+        var stamp = new Date(Date.now() + 7 * 3600000).toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        onShot(new File([blob], 'Kamera-' + stamp + '.jpg', { type: 'image/jpeg' }));
+        shots++; $('.cam-info', bg).textContent = shots + ' foto diambil. Ambil lagi atau tekan Selesai.';
+      }, 'image/jpeg', 0.85);
+    };
+    start();
+  }
 
   // ---------------- PIN ----------------
   function pinScreen(message) {
@@ -182,8 +248,7 @@
       '<div class="row2"><div><label class="f" for="p-kat">Kategori</label><input class="input" id="p-kat" list="dl-kat" value="' + esc(ed ? ed.kategori : '') + '"></div>' +
       '<div><label class="f" for="p-akun">Ke Account / Toko</label><input class="input" id="p-akun" list="dl-akun" placeholder="mis. Listrik KWh 2, Indomaret" value="' + esc(ed ? ed.akun : '') + '"></div></div>' +
       datalist('dl-kat', d.suggest.kategori) + datalist('dl-akun', d.suggest.akun) +
-      '<label class="f" for="p-file">Foto struk / nota ' + (ed ? '(tambahan)' : '') + '</label><input class="input" type="file" id="p-file" accept="image/*,application/pdf" multiple>' +
-      '<div class="files" id="p-files"></div>' +
+      '<label class="f">Foto struk / nota ' + (ed ? '(tambahan)' : '') + '</label>' + pickerHtml('petty') +
       (ed && ed.nota ? '<div class="acts" style="margin-top:6px">' + links(ed.nota) + '</div>' : '') +
       '<div id="p-msg"></div><button class="btn" id="p-save" style="margin-top:14px">' + (ed ? 'Simpan perubahan' : 'Simpan ke Petty Cash') + '</button></section>' +
       '<section class="card"><h2>Riwayat Petty Cash<span class="right"><select class="input" id="p-month" style="width:auto;padding:6px 10px"><option value="">Semua (150 terakhir)</option>' +
@@ -191,7 +256,7 @@
       '</select></span></h2><div id="p-list"></div></section>';
     var jenis = masuk ? 'in' : 'out';
     $$('#jenis button').forEach(function (b) { b.onclick = function () { jenis = b.dataset.v; $$('#jenis button').forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
-    $('#p-file').onchange = function () { $('#p-files').textContent = fileNames(this.files); };
+    bindPickers(app);
     if ($('#cancel-edit')) $('#cancel-edit').onclick = function () { state.pettyEdit = null; pettyPage(); };
     var list = function () {
       var m = $('#p-month').value;
@@ -208,11 +273,11 @@
         kategori: $('#p-kat').value.trim(), akun: $('#p-akun').value.trim() };
       if (!entry.tanggal || !entry.transaksi || !nominal) { $('#p-msg').innerHTML = '<div class="alert err">Tanggal, nama transaksi dan nominal wajib diisi.</div>'; return; }
       busy(btn, true, 'Menyimpan…');
-      packFiles($('#p-file').files).then(function (files) {
+      packFiles(PICK.petty).then(function (files) {
         return ed ? call('fin_petty_update', { row: ed.row, fp: ed.fp, entry: entry, files: files }) : call('fin_petty_add', { entry: entry, files: files });
       }).then(function () {
         toast(ed ? 'Perubahan disimpan.' : 'Transaksi tercatat di Petty Cash.');
-        state.pettyEdit = null; load(true);
+        state.pettyEdit = null; PICK.petty = []; load(true);
       }, function (e) {
         busy(btn, false, ed ? 'Simpan perubahan' : 'Simpan ke Petty Cash');
         if (e.pin) { clearPin(); return pinScreen(e.message); }
@@ -226,7 +291,7 @@
 
   function pengajuanPage() {
     var d = state.data;
-    if (!state.pjItems) { state.pjItems = [blankItem()]; state.pjFiles = {}; state.pjDate = today(); state.pjEditing = false; }
+    if (!state.pjItems) { clearPicks('pj'); state.pjItems = [blankItem()]; state.pjDate = today(); state.pjEditing = false; }
     var s = d.suggest;
     app.innerHTML =
       '<section class="card"><h2><span class="num">' + (state.pjEditing ? '✎' : '+') + '</span>' + (state.pjEditing ? 'Edit pengajuan ' + longDate(state.pjDate) : 'Form Pengajuan & Reimbursment') + '</h2>' +
@@ -255,11 +320,12 @@
         '<div class="row3">' + f('nominal', 'Nominal / harga satuan <span class="req">*</span>', 'inputmode="numeric" placeholder="0"') + f('dp', 'DP / Disc', 'inputmode="numeric" placeholder="0"') + f('tanggal_dp', 'Tanggal DP', 'type="date"') + '</div>' +
         '<div class="row3">' + f('atas_nama', 'Atas nama (A/N)', 'list="dl-an"') + f('no_rekening', 'No. rekening', 'inputmode="numeric"') + f('bank', 'Bank') + '</div>' +
         f('source', 'Source', 'list="dl-src" placeholder="mis. Transfer Owner"') +
-        '<label class="f">Lampiran (foto nota / invoice)' + (it.item_id ? ' — tambahan' : '') + '</label><input class="input" type="file" data-file="' + i + '" accept="image/*,application/pdf" multiple>' +
-        '<div class="files">' + esc(fileNames(state.pjFiles[i])) + '</div>' + (it.nota ? '<div class="acts">' + links(it.nota) + '</div>' : '') + '</div>';
+        '<label class="f">Lampiran (foto nota / invoice)' + (it.item_id ? ' — tambahan' : '') + '</label>' + pickerHtml('pj' + i) + (it.nota ? '<div class="acts">' + links(it.nota) + '</div>' : '') + '</div>';
     }).join('');
-    $$('#pj-items [data-rm]').forEach(function (b) { b.onclick = function () { syncItems(); state.pjItems.splice(Number(b.dataset.rm), 1); state.pjFiles = {}; renderItems(); }; });
-    $$('#pj-items [data-file]').forEach(function (inp) { inp.onchange = function () { state.pjFiles[Number(inp.dataset.file)] = inp.files; inp.nextElementSibling.textContent = fileNames(inp.files); }; });
+    $$('#pj-items [data-rm]').forEach(function (b) { b.onclick = function () { syncItems(); var idx = Number(b.dataset.rm); state.pjItems.splice(idx, 1);
+      for (var k = idx; k < state.pjItems.length; k++) PICK['pj' + k] = PICK['pj' + (k + 1)] || [];
+      delete PICK['pj' + state.pjItems.length]; renderItems(); }; });
+    bindPickers($('#pj-items'));
     $$('#pj-items [data-k="atas_nama"]').forEach(function (inp) {
       inp.onchange = function () {
         var acc = state.data.suggest.accounts[inp.value.trim()]; if (!acc) return;
@@ -284,13 +350,13 @@
     if (!state.pjDate || bad.length) { $('#pj-msg').innerHTML = '<div class="alert err">Isi tanggal, serta keterangan dan nominal setiap item.</div>'; return; }
     var items = state.pjItems.map(function (it) { return Object.assign({}, it, { nominal: num(it.nominal), dp: num(it.dp), qty: num(it.qty) || 1 }); });
     busy(btn, true, 'Menyimpan…');
-    var keys = Object.keys(state.pjFiles);
-    Promise.all(keys.map(function (k) { return packFiles(state.pjFiles[k]); })).then(function (packed) {
+    var keys = state.pjItems.map(function (x, i) { return i; }).filter(function (i) { return (PICK['pj' + i] || []).length; });
+    Promise.all(keys.map(function (k) { return packFiles(PICK['pj' + k]); })).then(function (packed) {
       var files = {}; keys.forEach(function (k, i) { files[k] = packed[i]; });
       return call('fin_pengajuan_save', { tanggal: state.pjDate, items: items, files: files });
     }).then(function (r) {
       toast('Pengajuan tersimpan: ' + r.file.title);
-      state.pjItems = null; load(true);
+      state.pjItems = null; clearPicks('pj'); load(true);
     }, function (e) {
       busy(btn, false, 'Simpan pengajuan');
       if (e.pin) { clearPin(); return pinScreen(e.message); }
@@ -311,9 +377,10 @@
             '<div class="amt" style="text-align:right">' + rp((Number(it.nominal) || 0) * (Number(it.qty) || 1)) + '<div>' + (lunas ? '<span class="pill lunas">Lunas ' + esc(dayParts(it.tanggal_bayar).join(' ')) + '</span>' : '<span class="pill wait">Diajukan</span>') + '</div></div></div>';
         }).join('') +
         '<div class="pj-row" data-paybox="' + gi + '" hidden><div class="what"><div class="row2"><div><label class="f" style="margin-top:0">Tanggal bayar</label><input class="input" type="date" data-paydate value="' + today() + '"></div>' +
-        '<div><label class="f" style="margin-top:0">Bukti transfer</label><input class="input" type="file" data-payfile accept="image/*,application/pdf" multiple></div></div>' +
+        '<div><label class="f" style="margin-top:0">Bukti transfer</label>' + pickerHtml('pay' + gi) + '</div></div>' +
         '<button class="btn" data-paygo="' + gi + '" style="margin-top:10px">Tandai lunas</button></div></div></div>';
     }).join('') : '<div class="empty">Belum ada pengajuan dari website.</div>';
+    bindPickers($('#pj-list'));
     $$('[data-pay]').forEach(function (cb) {
       cb.onchange = function () {
         var gi = cb.dataset.pay;
@@ -325,9 +392,9 @@
         var gi = b.dataset.paygo, box = $('[data-paybox="' + gi + '"]');
         var ids = $$('[data-pay="' + gi + '"]').filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
         busy(b, true, 'Menyimpan…');
-        packFiles($('[data-payfile]', box).files).then(function (files) {
+        packFiles(PICK['pay' + gi]).then(function (files) {
           return call('fin_pengajuan_pay', { itemIds: ids, tanggalBayar: $('[data-paydate]', box).value, files: files });
-        }).then(function () { toast(ids.length + ' item ditandai lunas.'); load(true); }, function (e) { busy(b, false, 'Tandai lunas'); toast(e.message, 'err'); });
+        }).then(function () { toast(ids.length + ' item ditandai lunas.'); clearPicks('pay'); load(true); }, function (e) { busy(b, false, 'Tandai lunas'); toast(e.message, 'err'); });
       };
     });
     $$('[data-pjdel]').forEach(function (b) {
@@ -342,7 +409,7 @@
         var it = null;
         state.data.pengajuan.forEach(function (g) { g.items.forEach(function (x) { if (x.item_id === b.dataset.pjedit) it = x; }); });
         if (!it) return;
-        state.pjItems = [Object.assign(blankItem(), it)]; state.pjFiles = {}; state.pjDate = it.tanggal_pengajuan; state.pjEditing = true;
+        clearPicks('pj'); state.pjItems = [Object.assign(blankItem(), it)]; state.pjDate = it.tanggal_pengajuan; state.pjEditing = true;
         pengajuanPage(); window.scrollTo(0, 0);
       };
     });
