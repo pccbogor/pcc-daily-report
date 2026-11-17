@@ -238,3 +238,21 @@ Cara pemetaan file lama:
 - File lama mencatat **jam**, bukan jumlah booking, jadi jumlah booking = jam dan durasi = 1 jam.
 - Kolom "Jumlah Terjualan" = metode BRI, kolom "Via Ayo" = metode AYO; booking manual = BRI (sesuai kolom di file lama).
 - Sheet **Bookingan Internal-Komunitas** tidak diimpor: isinya sama di semua file (3 jam Padelan Society per court), terlihat seperti isian bawaan template, dan tidak punya pendapatan.
+
+
+## Keuangan (khusus manajer) — https://pccbogor.github.io/pcc-daily-report/keuangan/
+
+Satu backend dengan laporan harian, tapi memakai PIN terpisah.
+
+| Script property | Isi |
+|---|---|
+| `MANAGER_PIN` | PIN manajer (isi sendiri, jangan dibagikan ke admin) |
+| `PETTY_CASH_ID` | Google Sheet **Report Arus Keuangan Petty Cash (WEB)** di KEUANGAN/PETTY CASH |
+| `PENGAJUAN_FOLDER_ID` | Folder **KEUANGAN/PENGAJUAN & REIMBURSMENT** |
+| `PENGAJUAN_TEMPLATE_ID` | Google Sheet **TEMPLATE PENGAJUAN DAN REIMBURSMENT (WEB) - JANGAN DIHAPUS** |
+| `BUKTI_FOLDER_ID` | Folder **KEUANGAN/BUKTI & LAMPIRAN** |
+
+- **Petty Cash**: setiap transaksi ditambahkan sebagai baris baru di buku kas berjalan (kolom Date, Transactions, Kredit, Debit, Category, Ke Account, Struk Nota). Edit/hapus dari website mengecek dulu bahwa baris di spreadsheet belum berubah.
+- **Pengajuan**: item disimpan di tab `Fin_Pengajuan` (database), lalu file "Pengajuan dan Reimbursment <tanggal> (WEB)" dibuat ulang dari template setiap ada perubahan (versi lama ke Sampah). Item dengan A/N yang sama dikelompokkan, Grand Total digabung. Item yang dibayar: kolom Tanggal Pembayaran terisi dan Mark = LUNAS + link bukti transfer.
+- **Lampiran**: semua foto/PDF masuk `BUKTI & LAMPIRAN/<YYYY-MM BULAN>/`, nama file diawali tanggal pencatatan.
+- Semua perubahan tercatat di tab `Fin_Log`.
