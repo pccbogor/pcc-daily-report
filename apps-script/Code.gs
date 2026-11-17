@@ -1165,8 +1165,10 @@ function inventoryTitle_(month) {
   return 'INVENTORY STOKIES ' + MONTHS_ID[Number(p[1]) - 1] + ' ' + p[0] + ' (WEB)';
 }
 
-/** Tab name or product name -> shared key ("Pocari Sweet 500Ml" and "Pocari Sweet" -> "pocari sweet"). */
-function inventoryKey_(name) { return dailyName_(name).replace(/\s*\d+\s*ml$/, ''); }
+/** Tab or product name -> key with the size kept ("Lestea 250 ml" -> "lestea 250ml"). */
+function inventoryKey_(name) { return dailyName_(name).replace(/(\d+)\s*ml\b/g, '$1ml'); }
+/** Same key without a trailing size, so tab "Pocari Sweet 500Ml" also takes product "Pocari Sweet". */
+function inventoryBase_(name) { return inventoryKey_(name).replace(/\s*\d+ml$/, ''); }
 
 function inventoryTabs_(ss) { return ss.getSheets().filter(function (sh) { return sh.getName() !== INV.MASTER; }); }
 
@@ -1220,11 +1222,16 @@ function updateInventory_(month, dates) {
     if (!ids[s.report_id]) return;
     var key = String(s.tanggal) + '|' + inventoryKey_(s.produk);
     qty[key] = (qty[key] || 0) + (Number(s.qty) || 0);
+    // Products sold without a size count for the tab of the same name with a size.
+    if (inventoryKey_(s.produk) === inventoryBase_(s.produk)) {
+      var bare = String(s.tanggal) + '|~' + inventoryBase_(s.produk);
+      qty[bare] = (qty[bare] || 0) + (Number(s.qty) || 0);
+    }
   });
   var tz = ss.getSpreadsheetTimeZone ? ss.getSpreadsheetTimeZone() : 'Asia/Jakarta';
   var written = 0;
   inventoryTabs_(ss).forEach(function (sh) {
-    var key = inventoryKey_(sh.getName());
+    var key = inventoryKey_(sh.getName()), base = inventoryBase_(sh.getName());
     var last = sh.getLastRow();
     if (last < INV.FIRST) return;
     var v = sh.getRange(INV.FIRST, 1, last - INV.FIRST + 1, 10).getValues();
@@ -1235,7 +1242,7 @@ function updateInventory_(month, dates) {
       var t = Utilities.formatDate(row[0], tz, 'yyyy-MM-dd');
       if (dates.indexOf(t) < 0 || done[t]) return;
       done[t] = true;
-      var q = qty[t + '|' + key] || 0;
+      var q = (qty[t + '|' + key] || 0) + (key !== base ? qty[t + '|~' + base] || 0 : 0);
       if (Number(row[3]) !== q || row[3] === '') sh.getRange(INV.FIRST + i, 4).setValue(q);
       written++;
     });
@@ -1255,4 +1262,70 @@ function rebuildInventoryMonth(month) {
   var res = updateInventory_(month, dates);
   Logger.log(JSON.stringify(res));
   return res;
+}
+
+/** Products that are counted as stock: Master_Produk rows of these groups (rentals are not stock). */
+var INV_GROUPS = ['Minuman', 'Snack'];
+
+/** Adds a tab (copy of an existing product tab, emptied) for `name`, plus its row in 'Master Produk'. */
+function addInventoryTab_(ss, name, modal, jual) {
+  var tabs = inventoryTabs_(ss);
+  if (!tabs.length) throw new Error('Tidak ada tab produk untuk dicontoh di ' + ss.getName());
+  var model = tabs[tabs.length - 1];
+  var oldLookup = null;
+  var f7 = model.getRange(7, 6).getFormula();
+  var m = /VLOOKUP\("([^"]+)"/.exec(f7);
+  if (m) oldLookup = m[1];
+  var sh = model.copyTo(ss);
+  sh.setName(name);
+  if (oldLookup) sh.createTextFinder('"' + oldLookup + '"').matchFormulaText(true).replaceAllWith('"' + name + '"');
+  sh.getRange(1, 1).setValue('INVENTORY - ' + name.toUpperCase());
+  sh.getRange(4, 1).setValue('Harga Modal: ' + (modal ? PCC.formatRupiah(modal) : '-'));
+  sh.getRange(4, 3).setValue('Harga Jual: ' + PCC.formatRupiah(jual));
+  sh.getRange(7, 3).setValue(0);
+  var last = sh.getLastRow();
+  if (last >= INV.FIRST) {
+    var n = last - INV.FIRST + 1;
+    var dates = sh.getRange(INV.FIRST, 1, n, 1).getValues();
+    var cd = sh.getRange(INV.FIRST, 3, n, 2).getValues();
+    sh.getRange(INV.FIRST, 3, n, 2).setValues(cd.map(function (row, i) { return dates[i][0] === '' ? row : [0, 0]; }));
+    sh.getRange(INV.FIRST, 10, n, 2).setValues(dates.map(function () { return ['', '']; }));
+  }
+  var mp = ss.getSheetByName(INV.MASTER);
+  if (mp) {
+    var names = mp.getRange(1, 2, Math.max(mp.getLastRow(), 1), 1).getValues().map(function (x) { return inventoryKey_(x[0]); });
+    if (names.indexOf(inventoryKey_(name)) < 0) {
+      var row = mp.getLastRow() + 1;
+      mp.getRange(row, 1, 1, 5).setValues([[row - 1, name, modal || '', jual, 'Pcs']]);
+    }
+  }
+  return sh;
+}
+
+/** From the editor: every drink/snack in Master_Produk without a tab gets one, in the template and in
+ *  this month's stock file (then this month's "Qty Keluar" is filled again). Safe to run more than once. */
+function addInventoryProducts() {
+  var props = PropertiesService.getScriptProperties();
+  var month = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+  var targets = [SpreadsheetApp.openById(props.getProperty('INVENTORY_TEMPLATE_ID'))];
+  var current = inventoryFile_(month, false);
+  if (current) targets.push(current);
+  var products = readTable_(SHEET.PRODUCTS).rows.filter(function (p) {
+    return INV_GROUPS.indexOf(String(p.grup)) >= 0 && String(p.aktif) !== 'false' && p.aktif !== false;
+  });
+  var added = [];
+  targets.forEach(function (ss) {
+    var have = inventoryTabs_(ss).map(function (sh) { return [inventoryKey_(sh.getName()), inventoryBase_(sh.getName())]; });
+    products.forEach(function (p) {
+      var k = inventoryKey_(p.produk);
+      var exists = have.some(function (h) { return h[0] === k || (k === inventoryBase_(p.produk) && h[1] === k); });
+      if (exists) return;
+      addInventoryTab_(ss, String(p.produk), Number(p.harga_modal) || 0, Number(p.harga) || 0);
+      have.push([k, inventoryBase_(p.produk)]);
+      added.push(ss.getName() + ': ' + p.produk);
+    });
+  });
+  if (current) rebuildInventoryMonth(month);
+  Logger.log('Tab ditambahkan (' + added.length + '):\n' + added.join('\n'));
+  return added;
 }

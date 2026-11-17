@@ -485,6 +485,36 @@ test('INVENTORY STOKIES: Qty Keluar = Shift 1 + Shift 2 per day, new month file 
   assert.strictEqual(cell(df, 'Mineral', dayRow(1), 4), 2);
   assert.strictEqual(e13.archives.filter((a) => a.title.startsWith('INVENTORY STOKIES NOVEMBER')).length, 1, 'one file per month');
 });
+test('addInventoryProducts: a tab per drink/snack, 220 ml and 250 ml kept apart, safe to run twice', () => {
+  const inv = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'inventory-format.json'), 'utf8'));
+  const e14 = load({ ACCESS_PIN: '1', REPORT_ROOT_FOLDER_ID: 'ROOT', INVENTORY_TEMPLATE_ID: 'INVTPL', __TEMPLATES: { INVTPL: inv } });
+  e14.ctx.setup();
+  const month = e14.ctx.Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+  const day1 = month + '-01';
+  e14.call({ action: 'submit', pin: '1', submissionId: 'p1', report: sample({ tanggal: day1, shift: 'Shift 1', admin: 'A', courts: [], sales: [
+    { produk: 'Cinnamon Red Ginger 220 ml', harga: 20000, qty: 2, metode: 'BRI' }, { produk: 'Cinnamon Red Ginger 250 ml', harga: 15000, qty: 5, metode: 'BRI' },
+    { produk: 'Pocari Sweet', harga: 15000, qty: 3, metode: 'BRI' }, { produk: 'Fitbar Coklat', harga: 10000, qty: 1, metode: 'AYO' }] }) });
+  const added = e14.ctx.addInventoryProducts();
+  const T = e14.archives.templates.INVTPL;
+  const names = T.getSheets().map((x) => x.getName());
+  ['Lestea 250 ml', 'Cinnamon Red Ginger 220 ml', 'Cinnamon Red Ginger 250 ml', 'Kopi', 'Americano', 'Fitbar Coklat', 'Fitbar Fruits', 'Fitbar Tiramisu']
+    .forEach((n) => assert.ok(names.includes(n), 'template has tab ' + n));
+  ['Raket', 'Sewa Bola', 'Sewa Handuk', 'Upgrade Raket'].forEach((n) => assert.ok(!names.includes(n), 'no stock tab for rental ' + n));
+  assert.strictEqual(names.filter((n) => /pocari/i.test(n)).length, 1, 'Pocari Sweet keeps its existing tab');
+  assert.strictEqual(added.length, 32, '16 new tabs in the template and 16 in this month\'s file');
+  const lestea = T.getSheetByName('Lestea 250 ml');
+  assert.ok(lestea.formulas['8,7'].includes('"Lestea 250 ml"'), 'price look-up points at the new product');
+  assert.strictEqual(lestea.data[0][0], 'INVENTORY - LESTEA 250 ML');
+  assert.ok(T.getSheetByName('Master Produk').data.some((r) => r[1] === 'Lestea 250 ml' && r[3] === 15000));
+  const file = e14.archives.find((a) => a.title.startsWith('INVENTORY STOKIES'));
+  const d = (tab) => file.getSheetByName(tab).data[7][3];
+  assert.strictEqual(d('Cinnamon Red Ginger 220 ml'), 2);
+  assert.strictEqual(d('Cinnamon Red Ginger 250 ml'), 5);
+  assert.strictEqual(d('Pocari Sweet 500Ml'), 3);
+  assert.strictEqual(d('Fitbar Coklat'), 1);
+  assert.strictEqual(d('Kara coco'.toLowerCase()), 0);
+  assert.strictEqual(e14.ctx.addInventoryProducts().length, 0, 'second run adds nothing');
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

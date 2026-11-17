@@ -7,8 +7,8 @@ const crypto = require('crypto');
 
 function makeSheet(name, seed) {
   const sh = {
-    name, data: seed ? JSON.parse(JSON.stringify(seed.values)) : [], formulas: seed ? Object.assign({}, seed.formulas) : {}, maxRows: 1000, inserted: 0,
-    getName: () => name,
+    name, data: seed ? structuredClone(seed.values) : [], formulas: seed ? Object.assign({}, seed.formulas) : {}, maxRows: 1000, inserted: 0,
+    getName: () => sh.name,
     getMaxRows: () => sh.maxRows,
     insertRowsAfter: (after, n) => { sh.maxRows += n; sh.inserted += n; },
     getLastRow: () => { for (let i = sh.data.length - 1; i >= 0; i--) if (sh.data[i].some((v) => v !== '' && v !== undefined)) return i + 1; return 0; },
@@ -21,7 +21,9 @@ function makeSheet(name, seed) {
     },
     deleteRows: (start, n) => { sh.data.splice(start - 1, n); },
     clear: () => { sh.data = []; sh.formulas = {}; },
-    setName: (n) => { sh.name = n; },
+    setName: (n) => { sh.name = n; return ps; },
+    copyTo: (dest) => { const c = makeSheet('Copy of ' + sh.name, { values: sh.data, formulas: sh.formulas }); dest.tabs['#' + Object.keys(dest.tabs).length] = c; return c; },
+    createTextFinder: (t) => { const tf = { matchFormulaText: () => tf, replaceAllWith: (r) => { Object.keys(sh.formulas).forEach((k) => { sh.formulas[k] = sh.formulas[k].split(t).join(r); }); } }; return tf; },
   };
   // Other Sheet methods (freeze, widths…) are no-ops.
   const ps = new Proxy(sh, { get: (t, k) => (k in t ? t[k] : () => ps) });
@@ -48,6 +50,7 @@ function range(sh, row, col, nr, nc) {
     getValue: () => r.getValues()[0][0],
     getDisplayValues: () => r.getValues().map((x) => x.map(String)),
     setFormula: (f) => { sh.formulas[`${row},${col}`] = f; return p; },
+    getFormula: () => sh.formulas[`${row},${col}`] || '',
     getFormulas: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => sh.formulas[`${row + i},${col + j}`] || '')),
     setFormulas: (fs2) => {
       if (fs2.length !== nr || fs2.some((x) => x.length !== nc)) throw new Error(`setFormulas size mismatch on ${sh.name}`);
@@ -87,7 +90,7 @@ function load(props) {
     const a = {
       title, id: 'ARCH' + archives.length,
       getId: () => a.id, getName: () => a.title, getSpreadsheetTimeZone: () => 'Asia/Jakarta', rename: (n) => { a.title = n; }, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + a.id,
-      getSheetByName: (n) => tabs[n] || null, insertSheet: (n) => (tabs[n] = makeSheet(n)),
+      getSheetByName: (n) => Object.values(tabs).find((t) => t.getName() === n) || null, insertSheet: (n) => (tabs[n] = makeSheet(n)),
       getSheets: () => Object.values(tabs), deleteSheet: (s) => { delete tabs[s.getName()]; }, tabs,
     };
     return a;
