@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.claude/
+# Never commit secrets. The admin PIN and folder ID live in Apps Script "Script properties".
+.env
+*.secret
+_local/
