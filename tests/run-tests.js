@@ -1,4 +1,5 @@
 // Run: node tests/run-tests.js
+process.env.TZ = 'Asia/Jakarta'; // dates in the sheets are Jakarta dates
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -435,6 +436,54 @@ test('daily file uses PCC\'s own LAPORAN PEMASUKAN format: copy of the template,
   assert.strictEqual(pj[39][4], 4); assert.strictEqual(pj[39][7], 1, 'Raket: 4 BRI + 1 via AYO');
   assert.strictEqual(pj[62][4], 2); assert.strictEqual(pj[62][6], 2, 'BCA qty noted');
   assert.strictEqual(pj[0][1], 'Shift 1 Dewi');
+});
+test('INVENTORY STOKIES: Qty Keluar = Shift 1 + Shift 2 per day, new month file from the template with opening stock', () => {
+  const inv = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'inventory-format.json'), 'utf8'));
+  const e13 = load({ ACCESS_PIN: '1', REPORT_ROOT_FOLDER_ID: 'ROOT', INVENTORY_TEMPLATE_ID: 'INVTPL', __TEMPLATES: { INVTPL: inv } });
+  e13.ctx.setup();
+  const s1 = e13.call({ action: 'submit', pin: '1', submissionId: 'i1', report: sample({ tanggal: '2026-11-17', shift: 'Shift 1', admin: 'A', courts: [],
+    sales: [{ produk: 'Mineral', harga: 10000, qty: 3, metode: 'BRI' }, { produk: 'Pocari Sweet', harga: 15000, qty: 1, metode: 'BCA' }, { produk: 'Raket', harga: 50000, qty: 2, metode: 'BRI' }] }) });
+  assert.strictEqual(s1.inventory.status, 'ok', JSON.stringify(s1.inventory));
+  const nov = e13.archives.find((a) => a.title === 'INVENTORY STOKIES NOVEMBER 2026 (WEB)');
+  assert.ok(nov, 'month file created');
+  assert.strictEqual(nov.folder, 'ROOT/LAPORAN 2026/NOVEMBER 2026');
+  assert.deepStrictEqual(Object.keys(nov.tabs), Object.keys(inv), 'same tabs as PCC\'s file');
+  const cell = (f, tab, r, c) => (f.tabs[tab].data[r - 1] || [])[c - 1];
+  const dayRow = (d) => 7 + d;
+  assert.strictEqual(cell(nov, 'Mineral', 7, 1), 'Oktober');
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(30), 1).getDate(), 30);
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(31), 1), '', 'November has 30 days');
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(17), 4), 3);
+  assert.strictEqual(cell(nov, 'Pocari Sweet 500Ml', dayRow(17), 4), 1, 'tab "Pocari Sweet 500Ml" = product "Pocari Sweet"');
+  assert.strictEqual(cell(nov, 'GRIP', dayRow(17), 4), 0, 'nothing sold is written as 0');
+  assert.strictEqual(nov.tabs.Mineral.formulas['25,5'], '=IF(OR(C25<>"",D25<>""),E24+C25-D25,"")', 'formulas kept');
+
+  // Shift 2 adds to the same day; a resubmit replaces, never doubles.
+  e13.call({ action: 'submit', pin: '1', submissionId: 'i2', report: sample({ tanggal: '2026-11-17', shift: 'Shift 2', admin: 'B', courts: [{ court: 1, kategori: 'AYO', harga: 100000, jumlah: 1, durasi: 1 }],
+    sales: [{ produk: 'Mineral', harga: 10000, qty: 5, metode: 'AYO' }] }) });
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(17), 4), 8);
+  e13.call({ action: 'submit', pin: '1', submissionId: 'i3', report: sample({ tanggal: '2026-11-17', shift: 'Shift 2', admin: 'B', courts: [{ court: 1, kategori: 'AYO', harga: 100000, jumlah: 1, durasi: 1 }],
+    sales: [{ produk: 'Mineral', harga: 10000, qty: 4, metode: 'BRI' }] }) });
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(17), 4), 7);
+
+  // Admin's complimentary row on the same date is left alone.
+  const m = nov.tabs.Mineral.data;
+  m[dayRow(18) - 1][9] = 'Yes'; m[dayRow(18) - 1][3] = 2; m[dayRow(18) - 1][0] = new Date(2026, 10, 17);
+  e13.call({ action: 'submit', pin: '1', submissionId: 'i4', report: sample({ tanggal: '2026-11-17', shift: 'Shift 1', admin: 'A', courts: [], sales: [{ produk: 'Mineral', harga: 10000, qty: 1, metode: 'BRI' }] }) });
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(17), 4), 5);
+  assert.strictEqual(cell(nov, 'Mineral', dayRow(18), 4), 2);
+
+  // December: new file, same template, opening stock = November's Sisa Stok (C3).
+  nov.tabs.Mineral.data[2][2] = 240;
+  const dec = e13.call({ action: 'submit', pin: '1', submissionId: 'i5', report: sample({ tanggal: '2026-12-01', shift: 'Shift 1', admin: 'A', courts: [], sales: [{ produk: 'Mineral', harga: 10000, qty: 2, metode: 'BRI' }] }) });
+  assert.strictEqual(dec.inventory.title, 'INVENTORY STOKIES DESEMBER 2026 (WEB)');
+  const df = e13.archives.find((a) => a.title === 'INVENTORY STOKIES DESEMBER 2026 (WEB)');
+  assert.strictEqual(df.folder, 'ROOT/LAPORAN 2026/DESEMBER 2026');
+  assert.strictEqual(cell(df, 'Mineral', 7, 1), 'November');
+  assert.strictEqual(cell(df, 'Mineral', 7, 3), 240);
+  assert.strictEqual(cell(df, 'Mineral', dayRow(31), 1).getDate(), 31);
+  assert.strictEqual(cell(df, 'Mineral', dayRow(1), 4), 2);
+  assert.strictEqual(e13.archives.filter((a) => a.title.startsWith('INVENTORY STOKIES NOVEMBER')).length, 1, 'one file per month');
 });
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;

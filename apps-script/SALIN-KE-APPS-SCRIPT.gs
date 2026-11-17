@@ -409,6 +409,9 @@ var PCC = (function () {
  *   REKAP_FOLDER_ID     Drive folder for monthly recap files ("Laporan Bulanan"); optional
  *   DAILY_TEMPLATE_ID   Google Sheet copy of PCC's own "LAPORAN PEMASUKAN" file (run prepareDailyTemplate once);
  *                       when set, every daily file is a copy of it with the day's numbers filled in
+ *   INVENTORY_TEMPLATE_ID  Google Sheet template of PCC's "INVENTORY STOKIES" file (tools/build_inventory.py);
+ *                       every submit writes the day's Shift 1 + Shift 2 product qty into "Qty Keluar" of
+ *                       <BULAN YYYY>/INVENTORY STOKIES <BULAN YYYY> (WEB), created from the template each month
  *   REPORT_ROOT_FOLDER_ID  Drive folder "Report PCC Bogor". When set it overrides the three above:
  *                       daily files go to   <root>/LAPORAN 2026/NOVEMBER 2026/LAPORAN HARIAN
  *                       the monthly recap to <root>/LAPORAN 2026/NOVEMBER 2026/Laporan Bulanan
@@ -718,6 +721,8 @@ function submitReport_(raw, submissionId) {
     var archive = { status: 'skipped' };
     try { archive = rebuildArchive_(report.tanggal); } catch (err) { archive = { status: 'error', error: String(err.message || err) }; }
     // Keep this month's REKAP BULAN file current after every report.
+    var inventory = { status: 'skipped' };
+    try { inventory = updateInventory_(report.tanggal.slice(0, 7), [report.tanggal]); } catch (err) { inventory = { status: 'error', error: String(err.message || err) }; }
     var recap = { status: 'skipped' };
     if (recapEnabled_()) {
       try { recap = exportRecap_(report.tanggal.slice(0, 7)); } catch (err) { recap = { status: 'error', error: String(err.message || err) }; }
@@ -727,7 +732,7 @@ function submitReport_(raw, submissionId) {
 
     return {
       ok: true, duplicate: false, action: action, reportId: reportId, version: version, totals: totals,
-      warnings: check.warnings, archive: archive, recap: recap, wa: wa, waText: waText,
+      warnings: check.warnings, archive: archive, inventory: inventory, recap: recap, wa: wa, waText: waText,
       message: action === 'CREATE' ? 'Laporan tersimpan.' : 'Laporan diperbarui (versi ' + version + ').'
     };
   } finally {
@@ -1130,6 +1135,7 @@ function deleteReport_(reportId, reason) {
     var stillActive = activeReports_().some(function (r) { return r.tanggal === tanggal; });
     var archive = { status: 'skipped' };
     try { archive = stillActive ? rebuildArchive_(tanggal) : removeArchive_(tanggal); } catch (e) { archive = { status: 'error', error: String(e.message || e) }; }
+    try { updateInventory_(tanggal.slice(0, 7), [tanggal]); } catch (e) { /* inventory is refreshed again on the next submit */ }
     return { ok: true, reportId: reportId, tanggal: tanggal, archive: archive };
   } finally {
     lock.releaseLock();
@@ -1542,4 +1548,108 @@ function rebuildAllArchives() {
   dates.forEach(function (t) { var res = rebuildArchive_(t); if (res.status === 'ok') ok++; else Logger.log(t + ': ' + JSON.stringify(res)); });
   Logger.log('Arsip dibuat ulang: ' + ok + ' dari ' + dates.length);
   return ok;
+}
+
+// =====================================================================
+// Monthly stock file: "INVENTORY STOKIES <BULAN YYYY> (WEB)" (INVENTORY_TEMPLATE_ID)
+// One tab per stocked product, one row per day. The backend writes "Qty Keluar" = Shift 1 + Shift 2
+// quantity of that product; stock in, complimentary rows and notes stay the admins' to fill.
+// =====================================================================
+var INV = { MASTER: 'Master Produk', FIRST: 8, ROWS: 31 };
+
+function inventoryTitle_(month) {
+  var p = String(month).split('-');
+  return 'INVENTORY STOKIES ' + MONTHS_ID[Number(p[1]) - 1] + ' ' + p[0] + ' (WEB)';
+}
+
+/** Tab name or product name -> shared key ("Pocari Sweet 500Ml" and "Pocari Sweet" -> "pocari sweet"). */
+function inventoryKey_(name) { return dailyName_(name).replace(/\s*\d+\s*ml$/, ''); }
+
+function inventoryTabs_(ss) { return ss.getSheets().filter(function (sh) { return sh.getName() !== INV.MASTER; }); }
+
+function shiftMonth_(month, delta) {
+  var p = String(month).split('-').map(Number);
+  var d = new Date(p[0], p[1] - 1 + delta, 1);
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+
+/** The month's stock file in <BULAN YYYY>; created from the template the first time (if `create`). */
+function inventoryFile_(month, create) {
+  var folder = monthFolder_(month);
+  if (!folder) return null;
+  var it = folder.getFilesByName(inventoryTitle_(month));
+  if (it.hasNext()) return SpreadsheetApp.openById(it.next().getId());
+  if (!create) return null;
+  var file = DriveApp.getFileById(PropertiesService.getScriptProperties().getProperty('INVENTORY_TEMPLATE_ID')).makeCopy(inventoryTitle_(month), folder);
+  var ss = SpreadsheetApp.openById(file.getId());
+  initInventoryMonth_(ss, month);
+  return ss;
+}
+
+/** New month: dates in column A, and the opening stock = last month's "Sisa Stok" of the same tab. */
+function initInventoryMonth_(ss, month) {
+  var p = month.split('-').map(Number);
+  var days = new Date(p[0], p[1], 0).getDate();
+  var prevMonth = shiftMonth_(month, -1);
+  var prev = inventoryFile_(prevMonth, false);
+  var prevName = MONTHS_ID[Number(prevMonth.split('-')[1]) - 1];
+  prevName = prevName.charAt(0) + prevName.slice(1).toLowerCase();
+  inventoryTabs_(ss).forEach(function (sh) {
+    var opening = 0;
+    if (prev) { var ps = prev.getSheetByName(sh.getName()); if (ps) opening = Number(ps.getRange(3, 3).getValue()) || 0; }
+    sh.getRange(7, 1).setValue(prevName);
+    sh.getRange(7, 3).setValue(opening);
+    var rows = [];
+    for (var i = 0; i < INV.ROWS; i++) rows.push(i < days ? [new Date(p[0], p[1] - 1, i + 1), 'Keluar', 0, 0] : ['', '', '', '']);
+    sh.getRange(INV.FIRST, 1, INV.ROWS, 4).setValues(rows);
+  });
+}
+
+/** Writes "Qty Keluar" for the given dates (all YYYY-MM-DD of `month`); 0 when nothing was sold. */
+function updateInventory_(month, dates) {
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('INVENTORY_TEMPLATE_ID') || !props.getProperty('REPORT_ROOT_FOLDER_ID')) return { status: 'skipped' };
+  var ss = inventoryFile_(month, true);
+  var ids = {};
+  activeReports_().forEach(function (r) { if (dates.indexOf(r.tanggal) >= 0) ids[r.report_id] = true; });
+  var qty = {};
+  readTable_(SHEET.SALES).rows.forEach(function (s) {
+    if (!ids[s.report_id]) return;
+    var key = String(s.tanggal) + '|' + inventoryKey_(s.produk);
+    qty[key] = (qty[key] || 0) + (Number(s.qty) || 0);
+  });
+  var tz = ss.getSpreadsheetTimeZone ? ss.getSpreadsheetTimeZone() : 'Asia/Jakarta';
+  var written = 0;
+  inventoryTabs_(ss).forEach(function (sh) {
+    var key = inventoryKey_(sh.getName());
+    var last = sh.getLastRow();
+    if (last < INV.FIRST) return;
+    var v = sh.getRange(INV.FIRST, 1, last - INV.FIRST + 1, 10).getValues();
+    var done = {};
+    v.forEach(function (row, i) {
+      if (Object.prototype.toString.call(row[0]) !== '[object Date]') return;
+      if (String(row[9]).trim().toLowerCase() === 'yes') return; // complimentary rows are the admins'
+      var t = Utilities.formatDate(row[0], tz, 'yyyy-MM-dd');
+      if (dates.indexOf(t) < 0 || done[t]) return;
+      done[t] = true;
+      var q = qty[t + '|' + key] || 0;
+      if (Number(row[3]) !== q || row[3] === '') sh.getRange(INV.FIRST + i, 4).setValue(q);
+      written++;
+    });
+  });
+  return { status: 'ok', url: ss.getUrl(), title: inventoryTitle_(month), rows: written };
+}
+
+/** From the editor: rewrites "Qty Keluar" of every day of a month (default: this month) up to today. */
+function rebuildInventoryMonth(month) {
+  month = /^\d{4}-\d{2}$/.test(String(month)) ? month : Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM');
+  var today = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+  var p = month.split('-').map(Number), dates = [];
+  for (var d = 1; d <= new Date(p[0], p[1], 0).getDate(); d++) {
+    var t = month + '-' + ('0' + d).slice(-2);
+    if (t <= today) dates.push(t);
+  }
+  var res = updateInventory_(month, dates);
+  Logger.log(JSON.stringify(res));
+  return res;
 }

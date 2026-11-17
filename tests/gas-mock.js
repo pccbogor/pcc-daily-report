@@ -70,6 +70,7 @@ function load(props) {
     const f = folders[id] || (folders[id] = { id, children: {} });
     return {
       getId: () => id,
+      getFilesByName: (n) => { const list = archives.filter((x) => x.folder === id && x.title === n && !x.trashed).map((x) => ({ getId: () => x.id })); let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
       getFoldersByName: (n) => { const list = f.children[n] ? [folder(f.children[n])] : []; let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
       createFolder: (n) => { const cid = id + '/' + n; f.children[n] = cid; folders[cid] = { id: cid, children: {} }; return folder(cid); },
     };
@@ -85,18 +86,21 @@ function load(props) {
   const spreadsheet = (title, tabs) => {
     const a = {
       title, id: 'ARCH' + archives.length,
-      getId: () => a.id, getName: () => a.title, rename: (n) => { a.title = n; }, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + a.id,
+      getId: () => a.id, getName: () => a.title, getSpreadsheetTimeZone: () => 'Asia/Jakarta', rename: (n) => { a.title = n; }, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + a.id,
       getSheetByName: (n) => tabs[n] || null, insertSheet: (n) => (tabs[n] = makeSheet(n)),
       getSheets: () => Object.values(tabs), deleteSheet: (s) => { delete tabs[s.getName()]; }, tabs,
     };
     return a;
   };
-  if (props.__TEMPLATE) {
+  archives.templates = {};
+  Object.entries(Object.assign({}, props.__TEMPLATES, props.__TEMPLATE ? { TPL: props.__TEMPLATE } : {})).forEach(([tid, fmt]) => {
     const tabs = {};
-    Object.entries(props.__TEMPLATE).forEach(([n, seed]) => { tabs[n] = makeSheet(n, seed); });
-    archives.template = spreadsheet('TEMPLATE', tabs);
-    archives.template.id = 'TPL';
-  }
+    Object.entries(fmt).forEach(([n, seed]) => { tabs[n] = makeSheet(n, seed); });
+    const t = spreadsheet('TEMPLATE ' + tid, tabs);
+    t.id = tid;
+    archives.templates[tid] = t;
+  });
+  archives.template = archives.templates.TPL;
   const ctx = {
     console,
     SpreadsheetApp: {
@@ -104,12 +108,12 @@ function load(props) {
       flush: () => {},
       create: (title) => { const a = spreadsheet(title, { Sheet1: makeSheet('Sheet1') }); archives.push(a); return a; },
       openById: (id) => {
-        if (id === 'TPL' && archives.template) return archives.template; const a = archives.find((x) => x.id === id); if (!a) throw new Error('not found'); return a; },
+        if (archives.templates[id]) return archives.templates[id]; const a = archives.find((x) => x.id === id); if (!a) throw new Error('not found'); return a; },
     },
     DriveApp: {
       getFolderById: (id) => folder(id),
       getFileById: (id) => {
-        const a = id === 'DB' ? archives.db : id === 'TPL' ? archives.template : archives.find((x) => x.id === id);
+        const a = id === 'DB' ? archives.db : archives.templates[id] || archives.find((x) => x.id === id);
         if (!a) throw new Error('file not found ' + id);
         return {
           getId: () => a.id,
