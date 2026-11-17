@@ -521,7 +521,7 @@ test('KEUANGAN: manager PIN only; Petty Cash add/edit/delete with photos in BUKT
   const ledger = { April: { values: [[], ['', 'April'], ['', 'Sisa Saldo', '', '', 5483, '', '', 'Date', 'Transactions', 'Kredit', 'Debit', 'Category', 'Ke Account', 'Struk Nota'],
     ['', '', '', '', '', '', '', new Date(2026, 10, 12), 'TF dari Mba Aca', 640000, '', '', '', ''],
     ['', '', '', '', 26741217, '', '', new Date(2026, 10, 12), 'Token Listrik 200K', '', 203000, '', 'Listrik KWh 2', ''],
-    ['', '', '', '', 26746700, '', '', '12 November', 'Token Listrik 200K', '', 203000, '', '', '']], formulas: { '3,5': '=E6-E5' } } };
+    ['', '', '', '', 26746700, '', '', new Date(2026, 10, 12), 'Token Listrik 200K', '', 203000, '', '', '']], formulas: { '3,5': '=E6-E5' } } };
   const e15 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: ledger, PJTPL: PJ_TEMPLATE } }));
   e15.ctx.setup();
   assert.strictEqual(e15.call({ action: 'fin_summary', pin: '1' }).ok, false, 'admin PIN cannot open finance');
@@ -596,6 +596,38 @@ test('KEUANGAN: pengajuan per tanggal from the template, grouped by recipient, p
   ids.forEach((id) => e16.call({ action: 'fin_pengajuan_delete', pin: '9', itemId: id }));
   assert.strictEqual(e16.call({ action: 'fin_summary', pin: '9' }).data.pengajuan.length, 0);
   assert.ok(e16.archives.filter((a) => a.title === save.file.title).every((a) => a.trashed), 'no items left: file goes to the trash');
+});
+test('KEUANGAN: rapikanPettyCash turns text dates into dates, one format, rows in date order; new rows land in place', () => {
+  const D = (y, m, d) => new Date(y, m - 1, d);
+  const row = (h, trx, k, d) => ['', '', '', '', '', '', '', h, trx, k || '', d || '', '', '', ''];
+  const ledger = { April: { values: [[], [], ['', '', '', '', 100],
+    row(D(2026, 4, 8), 'A', 1000),
+    row('24 April 0226', 'B', '', 10),
+    row(D(2026, 4, 23), 'C', '', 20),
+    row('8 July 0226', 'D', '', 30),
+    row(D(2026, 7, 7), 'E', '', 40),
+    row('20 Juli', 'F', '', 50),
+    row('', 'G (tanpa tanggal)', '', 60),
+    row('9 Movember', 'H', '', 70),
+    row(D(2026, 11, 7), 'I', '', 80),
+    row('1 Mei 2026', 'J', '', 90),
+    row('tanggal aneh', 'K', '', 5)], formulas: {} } };
+  const e17 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: ledger, PJTPL: PJ_TEMPLATE } }));
+  e17.ctx.setup();
+  assert.strictEqual(e17.ctx.parseLooseDate_('9 Movember', 2026).getMonth(), 10);
+  assert.strictEqual(e17.ctx.parseLooseDate_('8 July 0226', 2026).getFullYear(), 2026);
+  assert.strictEqual(e17.ctx.parseLooseDate_('Token 200K', 2026), null);
+  assert.strictEqual(e17.ctx.rapikanPettyCashDryRun(), 6);
+  const L = () => e17.archives.templates.PETTY.tabs.April.data.slice(3).map((r) => r[8]);
+  assert.deepStrictEqual(L(), ['A', 'B', 'C', 'D', 'E', 'F', 'G (tanpa tanggal)', 'H', 'I', 'J', 'K'], 'dry run changes nothing');
+  assert.strictEqual(e17.ctx.rapikanPettyCash(), 6);
+  assert.deepStrictEqual(L(), ['A', 'C', 'B', 'J', 'E', 'D', 'F', 'G (tanpa tanggal)', 'I', 'H', 'K']);
+  const dates = e17.archives.templates.PETTY.tabs.April.data.slice(3, 13).map((r) => r[7]);
+  assert.ok(dates.every((d) => Object.prototype.toString.call(d) === '[object Date]'), 'all real dates');
+  assert.strictEqual(e17.archives.templates.PETTY.tabs.April.data[3][14], '', 'helper column cleared');
+  const add = e17.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-05-15', transaksi: 'Backdate', debit: 1000 } });
+  assert.ok(add.ok, add.error);
+  assert.strictEqual(L().indexOf('Backdate'), 4, 'older transaction slots in by date');
 });
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;

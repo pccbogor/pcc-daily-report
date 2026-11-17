@@ -1200,13 +1200,14 @@ function initInventoryMonth_(ss, month) {
   var prev = inventoryFile_(prevMonth, false);
   var prevName = MONTHS_ID[Number(prevMonth.split('-')[1]) - 1];
   prevName = prevName.charAt(0) + prevName.slice(1).toLowerCase();
+  var tz = ss.getSpreadsheetTimeZone ? ss.getSpreadsheetTimeZone() : 'Asia/Jakarta';
   inventoryTabs_(ss).forEach(function (sh) {
     var opening = 0;
     if (prev) { var ps = prev.getSheetByName(sh.getName()); if (ps) opening = Number(ps.getRange(3, 3).getValue()) || 0; }
     sh.getRange(7, 1).setValue(prevName);
     sh.getRange(7, 3).setValue(opening);
     var rows = [];
-    for (var i = 0; i < INV.ROWS; i++) rows.push(i < days ? [new Date(p[0], p[1] - 1, i + 1), 'Keluar', 0, 0] : ['', '', '', '']);
+    for (var i = 0; i < INV.ROWS; i++) rows.push(i < days ? [finDateObj_(month + '-' + ('0' + (i + 1)).slice(-2), tz), 'Keluar', 0, 0] : ['', '', '', '']);
     sh.getRange(INV.FIRST, 1, INV.ROWS, 4).setValues(rows);
   });
 }
@@ -1411,7 +1412,15 @@ function finDate_(t) {
   if (!PCC.isValidDate(String(t))) throw new Error('Tanggal tidak valid.');
   return String(t);
 }
-function finDateObj_(t) { var p = String(t).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); }
+/** YYYY-MM-DD -> Date at midnight in `tz` (the target spreadsheet's time zone), so the sheet shows that exact day. */
+function finDateObj_(t, tz) {
+  if (tz) return Utilities.parseDate(String(t), tz, 'yyyy-MM-dd');
+  var p = String(t).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]);
+}
+/** Time zone of the spreadsheet a sheet belongs to (files converted from .xlsx may not be Asia/Jakarta). */
+function sheetTz_(sh) {
+  try { var z = sh.getParent().getSpreadsheetTimeZone(); return typeof z === 'string' && z ? z : 'Asia/Jakarta'; } catch (e) { return 'Asia/Jakarta'; }
+}
 function finText_(v, max) { return String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max || 200); }
 function finMoney_(v) { var n = PCC.toNum(v); return n > 0 ? n : 0; }
 
@@ -1457,9 +1466,10 @@ function ledgerRows_(sh) {
   var n = last - FIN.LEDGER_FIRST + 1;
   var vals = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getValues();
   var shown = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getDisplayValues();
+  var tz = sheetTz_(sh);
   return vals.map(function (v, i) {
     var d = v[0];
-    var iso = Object.prototype.toString.call(d) === '[object Date]' ? Utilities.formatDate(d, 'Asia/Jakarta', 'yyyy-MM-dd') : '';
+    var iso = Object.prototype.toString.call(d) === '[object Date]' ? Utilities.formatDate(d, tz, 'yyyy-MM-dd') : '';
     return {
       row: FIN.LEDGER_FIRST + i, tanggal: iso, tanggalText: shown[i][0], transaksi: String(v[1]),
       kredit: Number(v[2]) || 0, debit: Number(v[3]) || 0, kategori: String(v[4]), akun: String(v[5]),
@@ -1484,7 +1494,8 @@ function pettyEntry_(e) {
 }
 
 function writeLedgerRow_(sh, row, e, nota) {
-  sh.getRange(row, 8, 1, 7).setValues([[finDateObj_(e.tanggal), e.transaksi, e.kredit || '', e.debit || '', e.kategori, e.akun, nota]]);
+  sh.getRange(row, 8, 1, 7).setValues([[finDateObj_(e.tanggal, sheetTz_(sh)), e.transaksi, e.kredit || '', e.debit || '', e.kategori, e.akun, nota]]);
+  sh.getRange(row, 8).setNumberFormat(LEDGER_DATE_FORMAT);
 }
 
 function finPettyAdd_(entry, files) {
@@ -1495,6 +1506,7 @@ function finPettyAdd_(entry, files) {
   if (row > L.sh.getMaxRows()) L.sh.insertRowsAfter(L.sh.getMaxRows(), 50);
   if (last >= FIN.LEDGER_FIRST) L.sh.getRange(last, 8, 1, 7).copyTo(L.sh.getRange(row, 8, 1, 7), { formatOnly: true });
   writeLedgerRow_(L.sh, row, e, links.join('\n'));
+  sortLedger_(L.sh);
   finLog_('PETTY_ADD', { row: row, entry: e, files: links.length });
   return { ok: true, row: row, links: links, saldo: Number(L.sh.getRange(3, 5).getValue()) || 0 };
 }
@@ -1513,6 +1525,7 @@ function finPettyUpdate_(row, fp, entry, files) {
   var links = saveBukti_(files, e.tanggal, e.transaksi);
   var nota = [old.nota].concat(links).filter(String).join('\n');
   writeLedgerRow_(L.sh, Number(row), e, nota);
+  sortLedger_(L.sh);
   finLog_('PETTY_UPDATE', { row: row, before: old, after: e, files: links.length });
   return { ok: true, row: Number(row), links: links };
 }
@@ -1646,14 +1659,15 @@ function fillPengajuan_(sh, tanggal, items) {
     sh.insertRowsBefore(FIN.PJ_FIRST + FIN.PJ_ROWS - 1, extra);
   }
   var n = Math.max(items.length, FIN.PJ_ROWS);
-  sh.getRange(2, 1).setValue(finDateObj_(tanggal));
+  var tz = sheetTz_(sh);
+  sh.getRange(2, 1).setValue(finDateObj_(tanggal, tz));
   var rows = [], marks = [];
   for (var i = 0; i < n; i++) {
     var it = items[i];
     if (!it) { rows.push([i + 1, '', '', '', '', '', '']); marks.push(['', '', '', '', '', '', '']); continue; }
-    rows.push([i + 1, it.keterangan, Number(it.qty) || 1, it.kategori, it.satuan, finDateObj_(it.tanggal_pengajuan),
-      it.tanggal_bayar ? finDateObj_(it.tanggal_bayar) : '']);
-    marks.push([Number(it.nominal) || 0, Number(it.dp) || '', it.tanggal_dp ? finDateObj_(it.tanggal_dp) : '', '', '', '', '']);
+    rows.push([i + 1, it.keterangan, Number(it.qty) || 1, it.kategori, it.satuan, finDateObj_(it.tanggal_pengajuan, tz),
+      it.tanggal_bayar ? finDateObj_(it.tanggal_bayar, tz) : '']);
+    marks.push([Number(it.nominal) || 0, Number(it.dp) || '', it.tanggal_dp ? finDateObj_(it.tanggal_dp, tz) : '', '', '', '', '']);
   }
   sh.getRange(FIN.PJ_FIRST, 1, n, 7).setValues(rows);
   sh.getRange(FIN.PJ_FIRST, 8, n, 3).setValues(marks.map(function (m) { return m.slice(0, 3); }));
@@ -1762,4 +1776,111 @@ function organizeBukti(dryRun) {
   }
   Logger.log((dryRun ? 'RENCANA (belum dipindah) ' : 'DIPINDAH ') + plan.length + ' file:\n' + lines.join('\n'));
   return plan.length;
+}
+
+// ---------------- Petty Cash: real dates, one date format, rows in date order ----------------
+var FIN_MONTHS = [['januari', 'january'], ['februari', 'february'], ['maret', 'march'], ['april'], ['mei', 'may'], ['juni', 'june'],
+  ['juli', 'july'], ['agustus', 'august'], ['september'], ['oktober', 'october'], ['november'], ['desember', 'december']];
+var LEDGER_DATE_FORMAT = 'd mmmm yyyy';
+
+function editDistance_(a, b) {
+  var d = [];
+  for (var i = 0; i <= a.length; i++) { d[i] = [i]; for (var j = 1; j <= b.length; j++) d[i][j] = i ? 0 : j; }
+  for (i = 1; i <= a.length; i++) for (j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[a.length][b.length];
+}
+
+/** "9 Movember", "8 July 0226", "20 Juli", "1 Mei 2026" -> Date (year missing or mistyped -> fallbackYear). */
+function parseLooseDate_(text, fallbackYear) {
+  var m = /^\s*(\d{1,2})[\s\-\/.]+([A-Za-z]+)\.?(?:[\s\-\/.,]+(\d{2,4}))?\s*$/.exec(String(text || ''));
+  if (!m) return null;
+  var word = m[2].toLowerCase(), best = -1, bestD = 9;
+  FIN_MONTHS.forEach(function (names, i) {
+    names.forEach(function (name) {
+      var dist = word.length >= 3 && name.indexOf(word) === 0 ? 0 : editDistance_(word, name);
+      if (dist < bestD) { bestD = dist; best = i; }
+    });
+  });
+  if (best < 0 || bestD > 2) return null;
+  var y = Number(m[3]);
+  if (!(y >= 2000 && y < 2100)) y = fallbackYear;
+  var d = new Date(y, best, Number(m[1]));
+  return d.getMonth() === best ? d : null;
+}
+
+/** Sorts the ledger rows by date; rows with the same date keep their order. */
+function sortLedger_(sh) {
+  var last = ledgerLastRow_(sh);
+  var n = last - FIN.LEDGER_FIRST + 1;
+  if (n < 2) return;
+  var order = [];
+  for (var i = 0; i < n; i++) order.push([i + 1]);
+  var tmp = sh.getRange(FIN.LEDGER_FIRST, 15, n, 1);
+  tmp.setValues(order);
+  sh.getRange(FIN.LEDGER_FIRST, 8, n, 8).sort([{ column: 8, ascending: true }, { column: 15, ascending: true }]);
+  tmp.clearContent();
+}
+
+/** From the editor: turns every text date into a real date, uses one date format, and sorts by date.
+ *  rapikanPettyCashDryRun() only logs what would change. */
+function rapikanPettyCashDryRun() { return rapikanPettyCash(true); }
+
+function rapikanPettyCash(dryRun) {
+  dryRun = dryRun === true;
+  var sh = ledger_().sh;
+  var last = ledgerLastRow_(sh);
+  var n = last - FIN.LEDGER_FIRST + 1;
+  if (n < 1) return 0;
+  var vals = sh.getRange(FIN.LEDGER_FIRST, 8, n, 4).getValues();
+  var shown = sh.getRange(FIN.LEDGER_FIRST, 8, n, 1).getDisplayValues();
+  var isDate = function (v) { return Object.prototype.toString.call(v) === '[object Date]'; };
+  var year = 2026, prev = null, changes = [], unknown = [], tz = sheetTz_(sh);
+  var toSheet = function (d) { return finDateObj_(Utilities.formatDate(d, 'Asia/Jakarta', 'yyyy-MM-dd'), tz); };
+  var out = vals.map(function (row, i) {
+    var v = row[0], hasData = String(row[1]) + String(row[2]) + String(row[3]) !== '';
+    if (isDate(v)) { year = Number(Utilities.formatDate(v, tz, 'yyyy')); prev = v; return [v]; }
+    if (v === '' || v === null) {
+      if (!hasData || !prev) return [v];
+      changes.push('baris ' + (FIN.LEDGER_FIRST + i) + ': (kosong) -> ' + Utilities.formatDate(prev, 'Asia/Jakarta', 'd MMM yyyy') + ' (ikut baris di atasnya) · ' + row[1]);
+      return [prev];
+    }
+    var d = parseLooseDate_(v, year);
+    if (!d) { unknown.push('baris ' + (FIN.LEDGER_FIRST + i) + ': "' + shown[i][0] + '" · ' + row[1]); return [v]; }
+    changes.push('baris ' + (FIN.LEDGER_FIRST + i) + ': "' + shown[i][0] + '" -> ' + Utilities.formatDate(d, 'Asia/Jakarta', 'd MMM yyyy') + ' · ' + row[1]);
+    d = toSheet(d);
+    prev = d;
+    return [d];
+  });
+  if (!dryRun) {
+    var col = sh.getRange(FIN.LEDGER_FIRST, 8, n, 1);
+    col.setValues(out);
+    col.setNumberFormat(LEDGER_DATE_FORMAT);
+    sortLedger_(sh);
+  }
+  Logger.log((dryRun ? 'RENCANA ' : 'SELESAI ') + changes.length + ' tanggal diperbaiki' + (unknown.length ? ', ' + unknown.length + ' tidak dikenali' : '') +
+    ':\n' + changes.join('\n') + (unknown.length ? '\nTidak dikenali (dibiarkan):\n' + unknown.join('\n') : ''));
+  return changes.length;
+}
+
+/** One-off from the editor: the first run of rapikanPettyCash wrote dates at Jakarta midnight into a sheet whose
+ *  time zone is not Jakarta, so they showed one day early. Every date is put back on the day it means. */
+function perbaikiTanggalPettyCash() {
+  var sh = ledger_().sh, tz = sheetTz_(sh);
+  var n = ledgerLastRow_(sh) - FIN.LEDGER_FIRST + 1;
+  if (n < 1) return 0;
+  var rng = sh.getRange(FIN.LEDGER_FIRST, 8, n, 1);
+  var vals = rng.getValues(), fixed = 0;
+  var out = vals.map(function (v) {
+    if (Object.prototype.toString.call(v[0]) !== '[object Date]') return v;
+    var d = finDateObj_(Utilities.formatDate(v[0], 'Asia/Jakarta', 'yyyy-MM-dd'), tz);
+    if (d.getTime() !== v[0].getTime()) fixed++;
+    return [d];
+  });
+  rng.setValues(out);
+  rng.setNumberFormat(LEDGER_DATE_FORMAT);
+  sortLedger_(sh);
+  Logger.log('Zona waktu sheet: ' + tz + '. Tanggal dikembalikan ke hari yang benar: ' + fixed);
+  return fixed;
 }

@@ -32,6 +32,7 @@ function makeSheet(name, seed) {
 }
 function range(sh, row, col, nr, nc) {
   let p;
+  const row0 = row - 1;
   const r = {
     getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => {
       const v = (sh.data[row - 1 + i] || [])[col - 1 + j];
@@ -48,6 +49,26 @@ function range(sh, row, col, nr, nc) {
       return p;
     },
     setValue: (v) => r.setValues([[v]]),
+    clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) { const row = sh.data[row0 + i]; if (row) row[col - 1 + j] = ''; } return p; },
+    sort: (specs) => {
+      const key = (v) => (Object.prototype.toString.call(v) === '[object Date]' ? [0, v.getTime()] : typeof v === 'number' ? [0, v] : v === '' || v === undefined ? [2, 0] : [1, String(v)]);
+      const rows = [];
+      for (let i = 0; i < nr; i++) rows.push(sh.data[row0 + i] ? sh.data[row0 + i].slice() : []);
+      rows.sort((x, y) => {
+        for (const sp of specs) {
+          const kx = key(x[sp.column - 1]), ky = key(y[sp.column - 1]);
+          if (kx[0] !== ky[0]) return kx[0] - ky[0];
+          if (kx[1] < ky[1]) return sp.ascending === false ? 1 : -1;
+          if (kx[1] > ky[1]) return sp.ascending === false ? -1 : 1;
+        }
+        return 0;
+      });
+      rows.forEach((rw, i) => {
+        const tgt = sh.data[row0 + i] || (sh.data[row0 + i] = []);
+        for (let j = 0; j < nc; j++) tgt[col - 1 + j] = rw[col - 1 + j];
+      });
+      return p;
+    },
     getValue: () => r.getValues()[0][0],
     getDisplayValues: () => r.getValues().map((x) => x.map(String)),
     setFormula: (f) => { sh.formulas[`${row},${col}`] = f; return p; },
@@ -151,6 +172,7 @@ function load(props) {
       getUuid: () => crypto.randomUUID(),
       base64Decode: (b) => Array.from(Buffer.from(b, 'base64')),
       newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
+      parseDate: (str, tz, fmt) => { const [y, m, d] = String(str).split('-').map(Number); return new Date(y, m - 1, d); },
       formatDate: (d, tz, fmt) => {
         const j = new Date(d.getTime() + 7 * 3600000); // Asia/Jakarta, UTC+7
         const p = (n) => String(n).padStart(2, '0');
