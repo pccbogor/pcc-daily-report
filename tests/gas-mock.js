@@ -62,6 +62,16 @@ function load(props) {
   const sheets = {};
   const archives = [];
   const fetches = [];
+  const triggers = [];
+  const folders = {}; // id -> { id, parent, children: {name: id} }
+  const folder = (id) => {
+    const f = folders[id] || (folders[id] = { id, children: {} });
+    return {
+      getId: () => id,
+      getFoldersByName: (n) => { const list = f.children[n] ? [folder(f.children[n])] : []; let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
+      createFolder: (n) => { const cid = id + '/' + n; f.children[n] = cid; folders[cid] = { id: cid, children: {} }; return folder(cid); },
+    };
+  };
   const ss = {
     getSheetByName: (n) => sheets[n] || null,
     insertSheet: (n) => (sheets[n] = makeSheet(n)),
@@ -87,8 +97,22 @@ function load(props) {
       openById: (id) => { const a = archives.find((x) => x.id === id); if (!a) throw new Error('not found'); return a; },
     },
     DriveApp: {
-      getFolderById: (id) => ({ id, getFoldersByName: () => ({ hasNext: () => false }), createFolder: (n) => ({ id: n }) }),
-      getFileById: (id) => ({ moveTo: (folder) => { archives.find((x) => x.id === id).folder = folder.id; }, setTrashed: (v) => { archives.find((x) => x.id === id).trashed = v; } }),
+      getFolderById: (id) => folder(id),
+      getFileById: (id) => {
+        const a = archives.find((x) => x.id === id);
+        return {
+          moveTo: (f) => { a.folder = f.getId(); a.moves = (a.moves || 0) + 1; },
+          setTrashed: (v) => { a.trashed = v; },
+          getParents: () => { const list = a.folder ? [folder(a.folder)] : []; let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
+        };
+      },
+    },
+    Logger: { log: () => {} },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.slice(),
+      deleteTrigger: (t) => { triggers.splice(triggers.indexOf(t), 1); },
+      newTrigger: (fn) => { const b = { timeBased: () => b, onMonthDay: (d) => { b.day = d; return b; }, atHour: (h) => { b.hour = h; return b; }, inTimezone: () => b,
+        create: () => { const t = { fn, day: b.day, hour: b.hour, getHandlerFunction: () => fn }; triggers.push(t); return t; } }; return b; },
     },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => (props[k] === undefined ? null : props[k]) }) },
     CacheService: { getScriptCache: () => ({ get: (k) => cache[k] || null, put: (k, v) => { cache[k] = v; } }) },
@@ -110,7 +134,7 @@ function load(props) {
   // Test exactly what gets pasted into Apps Script: the single bundled file.
   vm.runInContext(fs.readFileSync(path.join(dir, 'SALIN-KE-APPS-SCRIPT.gs'), 'utf8'), ctx, { filename: 'SALIN-KE-APPS-SCRIPT.gs' });
   const call = (body) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).body);
-  return { ctx, sheets, archives, call, fetches };
+  return { ctx, sheets, archives, call, fetches, folders, triggers };
 }
 
 module.exports = { load };

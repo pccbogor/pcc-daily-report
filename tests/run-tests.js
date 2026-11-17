@@ -276,6 +276,45 @@ test('deleteReport_ removes detail rows, keeps the report as DELETED, logs it, a
   const again = e8.call({ action: 'submit', pin: '1', submissionId: 'd2', report: sample() });
   assert.strictEqual(again.action, 'CREATE', 'same tanggal+shift+nama can be reported again after deletion');
 });
+test('month folders: archives go to "NOVEMBER 2026"/"DESEMBER 2026" (created once), old flat files can be moved', () => {
+  const props = { ACCESS_PIN: '1', ARCHIVE_FOLDER_ID: 'HARIAN' };
+  const e9 = load(props);
+  e9.ctx.setup();
+  e9.call({ action: 'submit', pin: '1', submissionId: 'm1', report: sample({ tanggal: '2026-11-15' }) });
+  assert.strictEqual(e9.archives[0].folder, 'HARIAN', 'flat while ARCHIVE_MONTH_FOLDERS is off');
+  props.ARCHIVE_MONTH_FOLDERS = 'true';
+  assert.strictEqual(e9.ctx.moveArchivesToMonthFolders(), 1);
+  assert.strictEqual(e9.archives[0].folder, 'HARIAN/NOVEMBER 2026');
+  assert.strictEqual(e9.ctx.moveArchivesToMonthFolders(), 0, 'second run moves nothing');
+  const nov2 = e9.call({ action: 'submit', pin: '1', submissionId: 'm2', report: sample({ tanggal: '2026-11-16' }) });
+  assert.strictEqual(nov2.archive.status, 'ok');
+  assert.strictEqual(e9.archives[1].folder, 'HARIAN/NOVEMBER 2026');
+  const dec = e9.call({ action: 'submit', pin: '1', submissionId: 'm3', report: sample({ tanggal: '2026-12-01' }) });
+  assert.strictEqual(dec.archive.status, 'ok');
+  assert.strictEqual(e9.archives[2].folder, 'HARIAN/DESEMBER 2026');
+  assert.deepStrictEqual(Object.keys(e9.folders.HARIAN.children).sort(), ['DESEMBER 2026', 'NOVEMBER 2026']);
+  const again = e9.call({ action: 'submit', pin: '1', submissionId: 'm4', report: sample({ tanggal: '2026-11-15', sales: [] }) });
+  assert.strictEqual(again.archive.status, 'ok');
+  assert.strictEqual(e9.archives[0].moves, 2, 'existing archive is reused, not moved again');
+});
+test('every submit refreshes the REKAP BULAN file of that month; trigger installs once', () => {
+  const e10 = load({ ACCESS_PIN: '1', REKAP_FOLDER_ID: 'BULANAN' });
+  e10.ctx.setup();
+  const a = e10.call({ action: 'submit', pin: '1', submissionId: 'r1', report: sample({ tanggal: '2026-11-15' }) });
+  assert.strictEqual(a.recap.status, 'ok');
+  assert.strictEqual(a.recap.title, 'REKAP BULAN NOVEMBER 2026 (WEB)');
+  const b = e10.call({ action: 'submit', pin: '1', submissionId: 'r2', report: sample({ tanggal: '2026-11-20' }) });
+  assert.strictEqual(b.recap.url, a.recap.url, 'same file all month');
+  const c = e10.call({ action: 'submit', pin: '1', submissionId: 'r3', report: sample({ tanggal: '2026-12-02' }) });
+  assert.strictEqual(c.recap.title, 'REKAP BULAN DESEMBER 2026 (WEB)');
+  assert.notStrictEqual(c.recap.url, a.recap.url, 'new month, new file');
+  assert.ok(e10.archives.every((x) => x.folder === 'BULANAN'));
+  e10.ctx.installMonthlyTrigger();
+  e10.ctx.installMonthlyTrigger();
+  assert.strictEqual(e10.triggers.length, 1);
+  assert.strictEqual(e10.triggers[0].fn, 'autoExportPreviousMonth');
+  assert.strictEqual(e10.triggers[0].day, 1);
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

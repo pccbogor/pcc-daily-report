@@ -314,12 +314,17 @@ function submitReport_(raw, submissionId) {
 
     var archive = { status: 'skipped' };
     try { archive = rebuildArchive_(report.tanggal); } catch (err) { archive = { status: 'error', error: String(err.message || err) }; }
+    // Keep this month's REKAP BULAN file current after every report.
+    var recap = { status: 'skipped' };
+    if (PropertiesService.getScriptProperties().getProperty('REKAP_FOLDER_ID')) {
+      try { recap = exportRecap_(report.tanggal.slice(0, 7)); } catch (err) { recap = { status: 'error', error: String(err.message || err) }; }
+    }
     var waText = PCC.waMessage(report, { products: cfg.products, shiftHours: cfg.shiftHours, coaches: cfg.coaches, courtShift: cfg.courtShift, version: version });
     var wa = sendWhatsApp_(waText);
 
     return {
       ok: true, duplicate: false, action: action, reportId: reportId, version: version, totals: totals,
-      warnings: check.warnings, archive: archive, wa: wa, waText: waText,
+      warnings: check.warnings, archive: archive, recap: recap, wa: wa, waText: waText,
       message: action === 'CREATE' ? 'Laporan tersimpan.' : 'Laporan diperbarui (versi ' + version + ').'
     };
   } finally {
@@ -363,14 +368,9 @@ function rebuildArchive_(tanggal) {
   var props = PropertiesService.getScriptProperties();
   var folderId = props.getProperty('ARCHIVE_FOLDER_ID');
   if (!folderId) return { status: 'skipped', reason: 'ARCHIVE_FOLDER_ID belum diisi' };
-  var folder = DriveApp.getFolderById(folderId);
+  var folder = archiveFolderFor_(tanggal);
   var p = tanggal.split('-');
   var monthName = MONTHS_ID[Number(p[1]) - 1];
-  if (String(props.getProperty('ARCHIVE_MONTH_FOLDERS')).toLowerCase() === 'true') {
-    var subName = monthName + ' ' + p[0];
-    var it = folder.getFoldersByName(subName);
-    folder = it.hasNext() ? it.next() : folder.createFolder(subName);
-  }
   var title = 'LAPORAN PEMASUKAN ' + p[2] + ' ' + monthName + ' ' + p[0] + ' (WEB)';
 
   var index = readTable_(SHEET.ARCHIVE);
@@ -381,6 +381,8 @@ function rebuildArchive_(tanggal) {
   if (!ss) {
     ss = SpreadsheetApp.create(title);
     DriveApp.getFileById(ss.getId()).moveTo(folder);
+  } else {
+    moveIfElsewhere_(ss.getId(), folder);
   }
 
   var reps = activeReports_().filter(function (r) { return r.tanggal === tanggal; });
@@ -666,8 +668,7 @@ function menuExportRecap() {
 }
 function menuRebuildRecap() { buildRecapSheet_(); SpreadsheetApp.getUi().alert('Kolom Rekap Bulanan diperbarui.'); }
 function menuInstallTrigger() {
-  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'autoExportPreviousMonth') ScriptApp.deleteTrigger(t); });
-  ScriptApp.newTrigger('autoExportPreviousMonth').timeBased().onMonthDay(1).atHour(6).inTimezone('Asia/Jakarta').create();
+  installMonthlyTrigger();
   SpreadsheetApp.getUi().alert('Aktif: setiap tanggal 1 jam 06.00, rekap bulan sebelumnya disimpan ke folder Laporan Bulanan.');
 }
 
@@ -742,4 +743,53 @@ function menuDeleteReport() {
   if (ui.alert('Hapus laporan ' + id + '?', 'Baris booking, penjualan, dan pemasukan lainnya untuk laporan ini dihapus. Riwayatnya tetap tercatat di Audit_Log.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
   var res = deleteReport_(id, 'Dihapus lewat menu PCC di spreadsheet');
   ui.alert('Laporan ' + res.reportId + ' (' + res.tanggal + ') dihapus. Arsip: ' + res.archive.status);
+}
+
+// =====================================================================
+// Monthly folders and one-off maintenance (run from the Apps Script editor)
+// =====================================================================
+/** Folder for a date's archive: ARCHIVE_FOLDER_ID, or its "NOVEMBER 2026" subfolder when ARCHIVE_MONTH_FOLDERS is true (created on first use). */
+function archiveFolderFor_(tanggal) {
+  var props = PropertiesService.getScriptProperties();
+  var folder = DriveApp.getFolderById(props.getProperty('ARCHIVE_FOLDER_ID'));
+  if (String(props.getProperty('ARCHIVE_MONTH_FOLDERS')).toLowerCase() !== 'true') return folder;
+  var p = String(tanggal).split('-');
+  var name = MONTHS_ID[Number(p[1]) - 1] + ' ' + p[0];
+  var it = folder.getFoldersByName(name);
+  return it.hasNext() ? it.next() : folder.createFolder(name);
+}
+
+function moveIfElsewhere_(fileId, folder) {
+  var file = DriveApp.getFileById(fileId);
+  var parents = file.getParents();
+  while (parents.hasNext()) { if (parents.next().getId() === folder.getId()) return false; }
+  file.moveTo(folder);
+  return true;
+}
+
+/** Moves every daily archive file listed in Archive_Index into its month folder. Returns how many were moved. */
+function moveArchivesToMonthFolders() {
+  var moved = 0;
+  readTable_(SHEET.ARCHIVE).rows.forEach(function (r) {
+    var t = String(r.tanggal);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t) || !r.file_id) return;
+    try { if (moveIfElsewhere_(r.file_id, archiveFolderFor_(t))) moved++; } catch (e) { /* file deleted by hand */ }
+  });
+  Logger.log('Arsip dipindahkan: ' + moved);
+  return moved;
+}
+
+/** Saves last month's recap on the 1st of every month at 06.00 (Asia/Jakarta). Safe to run more than once. */
+function installMonthlyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'autoExportPreviousMonth') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('autoExportPreviousMonth').timeBased().onMonthDay(1).atHour(6).inTimezone('Asia/Jakarta').create();
+  Logger.log('Pemicu rekap bulanan aktif');
+  return 'ok';
+}
+
+/** Creates/refreshes this month's REKAP BULAN file now. */
+function exportCurrentRecap() {
+  var res = exportRecap_(Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM'));
+  Logger.log(res.title + ' ' + res.url);
+  return res;
 }
