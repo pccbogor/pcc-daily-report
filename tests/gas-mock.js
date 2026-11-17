@@ -5,9 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-function makeSheet(name) {
+function makeSheet(name, seed) {
   const sh = {
-    name, data: [], formulas: {}, maxRows: 1000, inserted: 0,
+    name, data: seed ? JSON.parse(JSON.stringify(seed.values)) : [], formulas: seed ? Object.assign({}, seed.formulas) : {}, maxRows: 1000, inserted: 0,
     getName: () => name,
     getMaxRows: () => sh.maxRows,
     insertRowsAfter: (after, n) => { sh.maxRows += n; sh.inserted += n; },
@@ -16,6 +16,7 @@ function makeSheet(name) {
     getDataRange: () => range(sh, 1, 1, Math.max(sh.getLastRow(), 1), Math.max(sh.getLastColumn(), 1)),
     getRange: (a, b, c, d) => {
       if (typeof a === 'string') return range(sh, 1, 1, 1, 1); // A1 strings only used for formatting
+      if (a < 1 || b < 1) throw new Error(`bad range ${a},${b} on ${sh.name}`);
       return range(sh, a, b, c || 1, d || 1);
     },
     deleteRows: (start, n) => { sh.data.splice(start - 1, n); },
@@ -39,7 +40,7 @@ function range(sh, row, col, nr, nc) {
       vals.forEach((rowVals, i) => {
         const ri = row - 1 + i;
         while (sh.data.length <= ri) sh.data.push([]);
-        rowVals.forEach((v, j) => { sh.data[ri][col - 1 + j] = v; });
+        rowVals.forEach((v, j) => { sh.data[ri][col - 1 + j] = v; delete sh.formulas[`${ri + 1},${col + j}`]; });
       });
       return p;
     },
@@ -47,6 +48,7 @@ function range(sh, row, col, nr, nc) {
     getValue: () => r.getValues()[0][0],
     getDisplayValues: () => r.getValues().map((x) => x.map(String)),
     setFormula: (f) => { sh.formulas[`${row},${col}`] = f; return p; },
+    getFormulas: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => sh.formulas[`${row + i},${col + j}`] || '')),
     setFormulas: (fs2) => {
       if (fs2.length !== nr || fs2.some((x) => x.length !== nc)) throw new Error(`setFormulas size mismatch on ${sh.name}`);
       fs2.forEach((rowF, i) => rowF.forEach((f, j) => { sh.formulas[`${row + i},${col + j}`] = f; }));
@@ -75,34 +77,50 @@ function load(props) {
   const ss = {
     getSheetByName: (n) => sheets[n] || null,
     insertSheet: (n) => (sheets[n] = makeSheet(n)),
-    getSpreadsheetLocale: () => props.__LOCALE || 'en_US',
     getId: () => 'DB',
+    getSpreadsheetLocale: () => props.__LOCALE || 'en_US',
   };
   archives.db = { id: 'DB', title: 'database' };
   const cache = {};
+  const spreadsheet = (title, tabs) => {
+    const a = {
+      title, id: 'ARCH' + archives.length,
+      getId: () => a.id, getName: () => a.title, rename: (n) => { a.title = n; }, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + a.id,
+      getSheetByName: (n) => tabs[n] || null, insertSheet: (n) => (tabs[n] = makeSheet(n)),
+      getSheets: () => Object.values(tabs), deleteSheet: (s) => { delete tabs[s.getName()]; }, tabs,
+    };
+    return a;
+  };
+  if (props.__TEMPLATE) {
+    const tabs = {};
+    Object.entries(props.__TEMPLATE).forEach(([n, seed]) => { tabs[n] = makeSheet(n, seed); });
+    archives.template = spreadsheet('TEMPLATE', tabs);
+    archives.template.id = 'TPL';
+  }
   const ctx = {
     console,
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       flush: () => {},
-      create: (title) => {
-        const tabs = { Sheet1: makeSheet('Sheet1') };
-        const a = {
-          title, id: 'ARCH' + archives.length,
-          getId: () => a.id, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + a.id,
-          getSheetByName: (n) => tabs[n] || null, insertSheet: (n) => (tabs[n] = makeSheet(n)),
-          getSheets: () => Object.values(tabs), deleteSheet: (s) => { delete tabs[s.getName()]; }, tabs,
-        };
-        archives.push(a);
-        return a;
-      },
-      openById: (id) => { const a = archives.find((x) => x.id === id); if (!a) throw new Error('not found'); return a; },
+      create: (title) => { const a = spreadsheet(title, { Sheet1: makeSheet('Sheet1') }); archives.push(a); return a; },
+      openById: (id) => {
+        if (id === 'TPL' && archives.template) return archives.template; const a = archives.find((x) => x.id === id); if (!a) throw new Error('not found'); return a; },
     },
     DriveApp: {
       getFolderById: (id) => folder(id),
       getFileById: (id) => {
-        const a = id === 'DB' ? archives.db : archives.find((x) => x.id === id);
+        const a = id === 'DB' ? archives.db : id === 'TPL' ? archives.template : archives.find((x) => x.id === id);
+        if (!a) throw new Error('file not found ' + id);
         return {
+          getId: () => a.id,
+          makeCopy: (title, f) => {
+            const tabs = {};
+            Object.values(a.tabs).forEach((t) => { tabs[t.getName()] = makeSheet(t.getName(), { values: t.data, formulas: t.formulas }); });
+            const c = spreadsheet(title, tabs);
+            c.folder = f.getId();
+            archives.push(c);
+            return ctx.DriveApp.getFileById(c.id);
+          },
           moveTo: (f) => { a.folder = f.getId(); a.moves = (a.moves || 0) + 1; },
           setTrashed: (v) => { a.trashed = v; },
           getParents: () => { const list = a.folder ? [folder(a.folder)] : []; let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },

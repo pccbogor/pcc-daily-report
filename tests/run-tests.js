@@ -8,7 +8,7 @@ const { load } = require('./gas-mock.js');
 let passed = 0;
 function test(name, fn) {
   try { fn(); passed++; console.log('  ok  ' + name); }
-  catch (e) { console.error('  FAIL ' + name + '\n       ' + e.message); process.exitCode = 1; }
+  catch (e) { console.error('  FAIL ' + name + '\n       ' + (process.env.STACK ? e.stack : e.message)); process.exitCode = 1; }
 }
 
 const sample = (over = {}) => Object.assign({
@@ -340,6 +340,101 @@ test('REPORT_ROOT_FOLDER_ID: files go to LAPORAN YYYY/BULAN YYYY/(LAPORAN HARIAN
   assert.strictEqual(jan.archive.status, 'ok');
   assert.strictEqual(e11.archives[4].folder, 'ROOT/LAPORAN 2027/JANUARI 2027/LAPORAN HARIAN');
   assert.deepStrictEqual(Object.keys(e11.folders.ROOT.children).sort(), ['LAPORAN 2026', 'LAPORAN 2027']);
+});
+// Tiny evaluator for the template's formulas (=SUM(..), +, *, cell and cross-tab references).
+function evaluator(tabs) {
+  const colNo = (l) => l.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+  const cell = (tab, a1) => {
+    const m = /^([A-Z]+)(\d+)$/.exec(a1);
+    const sh = tabs[tab]; const r = Number(m[2]), c = colNo(m[1]);
+    const f = sh.formulas[`${r},${c}`];
+    if (f) return ev(tab, f.slice(1));
+    const v = (sh.data[r - 1] || [])[c - 1];
+    return typeof v === 'number' ? v : Number(v) || 0;
+  };
+  const rng = (tab, a, b) => {
+    const p = (x) => { const m = /^([A-Z]+)(\d+)$/.exec(x); return [Number(m[2]), colNo(m[1])]; };
+    const [r1, c1] = p(a), [r2, c2] = p(b), out = [];
+    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) out.push(cell(tab, String.fromCharCode(64 + c) + r));
+    return out;
+  };
+  function ev(tab, expr) {
+    const js = expr.replace(/SUM\(/g, 'S(')
+      .replace(/(?:'([^']+)'!)?\b([A-Z]{1,2}\d+)(?::([A-Z]{1,2}\d+))?\b/g, (_, t, a, b) => (b
+        ? `R(${JSON.stringify(t || tab)},"${a}","${b}")` : `C(${JSON.stringify(t || tab)},"${a}")`));
+    const S = (...xs) => xs.flat().reduce((x, y) => x + (Number(y) || 0), 0);
+    return Function('R', 'C', 'S', 'return ' + js)(rng, cell, S);
+  }
+  return (tab, a1) => cell(tab, a1);
+}
+test('daily file uses PCC\'s own LAPORAN PEMASUKAN format: copy of the template, inputs filled, Summary formulas add up', () => {
+  const format = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'laporan-pemasukan-format.json'), 'utf8'));
+  const e12 = load({ ACCESS_PIN: '1', ARCHIVE_FOLDER_ID: 'HARIAN', DAILY_TEMPLATE_ID: 'TPL', __TEMPLATE: format });
+  e12.ctx.setup();
+  const T = e12.archives.template.tabs;
+  e12.ctx.prepareDailyTemplate();
+  const tv = (tab, r, c) => (T[tab].data[r - 1] || [])[c - 1];
+  assert.strictEqual(tv('Booking Lapang', 12, 4), '', 'sample hours cleared');
+  assert.strictEqual(tv('Booking Lapang', 10, 4), 'Jumlah Jam Booking', 'headers untouched');
+  assert.strictEqual(tv('Booking Lapang', 12, 3), 100000, 'price tiers kept');
+  assert.strictEqual(tv('Penjualan & Penyewaan', 40, 5), 0, 'sales qty reset to 0');
+  assert.strictEqual(tv('Penjualan & Penyewaan', 1, 2), 'Shift 1');
+  assert.strictEqual(T['Penjualan & Penyewaan'].formulas['33,9'], '=SUM(I5:I32)', 'TOTAL now includes Americano');
+  assert.strictEqual(T['Penjualan & Penyewaan'].formulas['102,5'], '=E32+E67');
+  assert.strictEqual(T['Booking Lapang'].formulas['12,7'], '=SUM(D12*C12)', 'formulas untouched');
+  assert.strictEqual(tv('Bookingan Internal-Komunitas', 4, 5), '');
+
+  // A day with nothing sold still produces the full file, all zeros.
+  const empty = e12.call({ action: 'submit', pin: '1', submissionId: 'e1', report: sample({ tanggal: '2026-11-20', shift: 'Shift 1', admin: 'Dewi', courts: [], sales: [], catatan: '' }) });
+  assert.strictEqual(empty.archive && empty.archive.status, 'ok', JSON.stringify(empty).slice(0, 300));
+  const f0 = e12.archives[e12.archives.length - 1];
+  assert.strictEqual(f0.title, 'LAPORAN PEMASUKAN 20 NOVEMBER 2026 (WEB)');
+  assert.deepStrictEqual(Object.keys(f0.tabs), Object.keys(format), 'same tabs as PCC\'s file');
+  assert.strictEqual(evaluator(f0.tabs)('Summary', 'C13'), 0);
+  assert.strictEqual(f0.tabs['Penjualan & Penyewaan'].data[0][1], 'Shift 1 Dewi');
+
+  const rep = sample({
+    tanggal: '2026-11-20', shift: 'Shift 2', admin: 'Lutfhi', catatan: '',
+    courts: [
+      { court: 1, kategori: 'AYO', harga: 100000, jumlah: 3, durasi: 1 },
+      { court: 2, kategori: 'AYO', harga: 160000, jumlah: 2, durasi: 1 },            // price not in the table
+      { court: 3, kategori: 'Manual', harga: 295000, jumlah: 1, durasi: 2, metode: 'BCA' },
+    ],
+    sales: [
+      { produk: 'Raket', harga: 50000, qty: 4, metode: 'BRI' }, { produk: 'Raket', harga: 50000, qty: 1, metode: 'AYO' },
+      { produk: 'Cinnamon Red Ginger 220 ml', harga: 20000, qty: 2, metode: 'BCA' }, { produk: 'Americano', harga: 15000, qty: 1, metode: 'BRI' },
+      { produk: 'Kara Coco', harga: 18000, qty: 1, metode: 'BRI' },
+    ],
+    other: [
+      { kategori: 'Photoshoot', keterangan: 'Prewed Court 2', nominal: 900000, jam: 2, metode: 'BRI' },
+      { kategori: 'Event - Lapangan', keterangan: 'Turnamen Court 1', nominal: 450000, jam: 1, metode: 'Mandiri' },
+      { kategori: 'Event - Uang Kebersihan', keterangan: 'Turnamen', nominal: 100000, metode: 'BRI' },
+      { kategori: 'Coaching', keterangan: 'Abi Ipan', nominal: 300000, metode: 'BRI' },
+    ],
+  });
+  const res = e12.call({ action: 'submit', pin: '1', submissionId: 'e2', report: rep });
+  assert.ok(res.archive, JSON.stringify(res).slice(0, 400));
+  assert.strictEqual(res.archive.status, 'ok');
+  assert.ok(f0.trashed, 'previous file of the day goes to the trash');
+  const f1 = e12.archives[e12.archives.length - 1];
+  const val = evaluator(f1.tabs);
+  const t = PCC.compute(PCC.normalize(rep));
+  assert.strictEqual(val('Summary', 'C5'), t.revenueAyo);
+  assert.strictEqual(val('Summary', 'C6'), t.revenueManual);
+  assert.strictEqual(val('Summary', 'C7'), t.revenueSales);
+  assert.strictEqual(val('Summary', 'C11'), 900000);
+  assert.strictEqual(val('Summary', 'C12'), 550000);
+  assert.strictEqual(val('Summary', 'C10'), 300000);
+  assert.strictEqual(val('Summary', 'C13'), t.grandTotal, 'Summary total = system total');
+  const bl = f1.tabs['Booking Lapang'].data;
+  assert.strictEqual(bl[3][2], '3 Jam'); assert.strictEqual(bl[4][2], '2 Jam'); assert.strictEqual(bl[5][2], '2 Jam');
+  assert.strictEqual(bl[3][4], '7 jam');
+  assert.strictEqual(bl[11][3], 3, 'Court 1 AYO @100rb row');
+  const pj = f1.tabs['Penjualan & Penyewaan'].data;
+  assert.strictEqual(pj[35][1], 'Shift 2 Lutfhi');
+  assert.strictEqual(pj[39][4], 4); assert.strictEqual(pj[39][7], 1, 'Raket: 4 BRI + 1 via AYO');
+  assert.strictEqual(pj[62][4], 2); assert.strictEqual(pj[62][6], 2, 'BCA qty noted');
+  assert.strictEqual(pj[0][1], 'Shift 1 Dewi');
 });
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;

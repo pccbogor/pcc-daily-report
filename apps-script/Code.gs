@@ -10,6 +10,8 @@
  *   ARCHIVE_FOLDER_ID   Drive folder for daily archive files (optional; archive is skipped if empty)
  *   ARCHIVE_MONTH_FOLDERS  "true" to file archives into "NOVEMBER 2026"-style subfolders (default: flat, like LAPORAN HARIAN today)
  *   REKAP_FOLDER_ID     Drive folder for monthly recap files ("Laporan Bulanan"); optional
+ *   DAILY_TEMPLATE_ID   Google Sheet copy of PCC's own "LAPORAN PEMASUKAN" file (run prepareDailyTemplate once);
+ *                       when set, every daily file is a copy of it with the day's numbers filled in
  *   REPORT_ROOT_FOLDER_ID  Drive folder "Report PCC Bogor". When set it overrides the three above:
  *                       daily files go to   <root>/LAPORAN 2026/NOVEMBER 2026/LAPORAN HARIAN
  *                       the monthly recap to <root>/LAPORAN 2026/NOVEMBER 2026/Laporan Bulanan
@@ -379,6 +381,16 @@ function rebuildArchive_(tanggal) {
   var index = readTable_(SHEET.ARCHIVE);
   var entry = null;
   index.rows.forEach(function (r) { if (String(r.tanggal) === tanggal) entry = r; });
+  var reps = activeReports_().filter(function (r) { return r.tanggal === tanggal; });
+  var ids = reps.map(function (r) { return r.report_id; });
+  var rowsOf = function (name) { return readTable_(name).rows.filter(function (r) { return ids.indexOf(r.report_id) >= 0; }).map(cleanRecord_); };
+  var courts = rowsOf(SHEET.COURT), sales = rowsOf(SHEET.SALES), other = rowsOf(SHEET.OTHER);
+
+  if (props.getProperty('DAILY_TEMPLATE_ID')) {
+    var made = rebuildDailyFromTemplate_(tanggal, title, folder, entry, reps, courts, sales, other);
+    return finishArchive_(tanggal, entry, made.id, made.url, title, made.notes);
+  }
+
   var ss = null;
   if (entry && entry.file_id) { try { ss = SpreadsheetApp.openById(entry.file_id); } catch (e) { ss = null; } }
   if (!ss) {
@@ -387,11 +399,6 @@ function rebuildArchive_(tanggal) {
   } else {
     moveIfElsewhere_(ss.getId(), folder);
   }
-
-  var reps = activeReports_().filter(function (r) { return r.tanggal === tanggal; });
-  var ids = reps.map(function (r) { return r.report_id; });
-  var rowsOf = function (name) { return readTable_(name).rows.filter(function (r) { return ids.indexOf(r.report_id) >= 0; }).map(cleanRecord_); };
-  var courts = rowsOf(SHEET.COURT), sales = rowsOf(SHEET.SALES), other = rowsOf(SHEET.OTHER);
   var agg = PCC.aggregate(reps, sales, tanggal, tanggal);
   var k = agg.kpi;
 
@@ -416,14 +423,17 @@ function rebuildArchive_(tanggal) {
   var first = ss.getSheets()[0];
   if (first.getName() !== 'Summary' && ss.getSheets().length > 4) ss.deleteSheet(first); // drop the default "Sheet1"
 
-  var url = ss.getUrl();
-  if (entry) writeObjectAt_(SHEET.ARCHIVE, entry._row, { tanggal: tanggal, file_id: ss.getId(), url: url, updated_at: new Date() });
-  else appendObjects_(SHEET.ARCHIVE, [{ tanggal: tanggal, file_id: ss.getId(), url: url, updated_at: new Date() }]);
-  // Point every report of that day at the archive file.
+  return finishArchive_(tanggal, entry, ss.getId(), ss.getUrl(), title, []);
+}
+
+/** Records the day's file in Archive_Index and points every report of that day at it. */
+function finishArchive_(tanggal, entry, fileId, url, title, notes) {
+  if (entry) writeObjectAt_(SHEET.ARCHIVE, entry._row, { tanggal: tanggal, file_id: fileId, url: url, updated_at: new Date() });
+  else appendObjects_(SHEET.ARCHIVE, [{ tanggal: tanggal, file_id: fileId, url: url, updated_at: new Date() }]);
   var rt = readTable_(SHEET.REPORTS);
   var col = HEADERS.Reports.indexOf('archive_url') + 1;
   rt.rows.forEach(function (r) { if (String(r.tanggal) === tanggal) rt.sheet.getRange(r._row, col).setValue(url); });
-  return { status: 'ok', url: url, title: title };
+  return { status: 'ok', url: url, title: title, notes: notes };
 }
 
 function writeArchiveTab_(ss, name, headers, rows, title) {
@@ -848,4 +858,291 @@ function exportCurrentRecap() {
   var res = exportRecap_(Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM'));
   Logger.log(res.title + ' ' + res.url);
   return res;
+}
+
+// =====================================================================
+// Daily file in PCC's own "LAPORAN PEMASUKAN" format (DAILY_TEMPLATE_ID)
+// The template is PCC's .xlsx saved as a Google Sheet. Every rebuild copies it and
+// fills only the input cells, so its tabs, layout and formulas stay exactly as PCC made them.
+// =====================================================================
+var DAILY = { SUMMARY: 'Summary', BL: 'Booking Lapang', PJ: 'Penjualan & Penyewaan', CO: 'Coaching Abi Ipan', IK: 'Bookingan Internal-Komunitas' };
+var DAILY_EXTRA = ['Event - Uang Kebersihan', 'Event - Uang Keamanan', 'Event - Pemasangan Alat', 'Biaya Tambahan Lain', 'Lainnya'];
+
+/** Builds the daily file from the template; the previous file of that date goes to the trash. */
+function rebuildDailyFromTemplate_(tanggal, title, folder, entry, reps, courts, sales, other) {
+  var file = DriveApp.getFileById(PropertiesService.getScriptProperties().getProperty('DAILY_TEMPLATE_ID')).makeCopy(title, folder);
+  var notes;
+  try {
+    notes = fillDailyReport_(SpreadsheetApp.openById(file.getId()), reps, courts, sales, other);
+  } catch (err) {
+    file.setTrashed(true);
+    throw err;
+  }
+  if (entry && entry.file_id && entry.file_id !== file.getId()) {
+    try { DriveApp.getFileById(entry.file_id).setTrashed(true); } catch (e) { /* already gone */ }
+  }
+  return { id: file.getId(), url: 'https://docs.google.com/spreadsheets/d/' + file.getId() + '/edit', notes: notes };
+}
+
+function dailyText_(v) { return String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim(); }
+function dailyCourt_(label) { var m = /court\s*(\d)/i.exec(dailyText_(label)); return m ? Number(m[1]) : null; }
+function dailyNum_(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+function dailyName_(s) {
+  var n = dailyText_(s).toLowerCase().replace(/[()]/g, ' ').replace(/\bfuits\b/, 'fruits').replace(/\s+/g, ' ').trim();
+  return n === 'kara' ? 'kara coco' : n;
+}
+
+/** Reads one tab: values, formulas, and helpers to find blocks by the label in column B. */
+function dailyGrid_(sh) {
+  var rg = sh.getDataRange();
+  var g = { sh: sh, v: rg.getValues(), f: rg.getFormulas(), writes: [] };
+  g.b = function (r) { return dailyText_((g.v[r - 1] || [])[1]); };
+  g.hasFormula = function (r, c) { return !!((g.f[r - 1] || [])[c - 1]); };
+  g.val = function (r, c) { return (g.v[r - 1] || [])[c - 1]; };
+  g.set = function (r, c, value) { if (!g.hasFormula(r, c)) g.writes.push([r, c, value]); };
+  g.find = function (re, from) { for (var r = from || 1; r <= g.v.length; r++) if (re.test(g.b(r))) return r; return 0; };
+  /** Rows after the block title (skipping header rows) up to its TOTAL row. */
+  g.block = function (re, skip) {
+    var start = g.find(re);
+    if (!start) return [];
+    var rows = [];
+    for (var r = start + skip; r <= g.v.length && g.b(r).toUpperCase() !== 'TOTAL'; r++) rows.push(r);
+    return rows;
+  };
+  g.flush = function () { g.writes.forEach(function (w) { sh.getRange(w[0], w[1]).setValue(w[2]); }); };
+  return g;
+}
+
+/** Court rows of a block: [{row, court}] — a blank label continues the court above it. */
+function dailyCourtRows_(g, rows) {
+  var court = null;
+  return rows.map(function (r) { court = dailyCourt_(g.b(r)) || court; return { row: r, court: court }; })
+    .filter(function (x) { return x.court; });
+}
+
+/** Fills the copied template. Returns notes about anything that did not fit the format. */
+function fillDailyReport_(ss, reps, courts, sales, other) {
+  var notes = [];
+  var bl = dailyGrid_(ss.getSheetByName(DAILY.BL));
+  var pj = dailyGrid_(ss.getSheetByName(DAILY.PJ));
+  var co = ss.getSheetByName(DAILY.CO) ? dailyGrid_(ss.getSheetByName(DAILY.CO)) : null;
+
+  // ---- hours per court (top table) ----
+  var hours = {}, total = 0;
+  courts.forEach(function (c) { var h = dailyNum_(c.total_jam); hours[c.court] = dailyNum_((hours[c.court] || 0) + h); total = dailyNum_(total + h); });
+  var top = bl.find(/^court$/i);
+  var ayoStart = bl.find(/^booking by ayo/i);
+  var firstCourtRow = 0;
+  for (var r = top + 1; top && r < ayoStart; r++) {
+    var n = dailyCourt_(bl.b(r));
+    if (!n) continue;
+    if (!firstCourtRow) firstCourtRow = r;
+    bl.set(r, 3, hours[n] ? hours[n] + ' Jam' : '');
+  }
+  if (firstCourtRow) bl.set(firstCourtRow, 5, total ? total + ' jam' : '');
+
+  // ---- AYO and manual bookings: one row per court + price ----
+  [['AYO', /^booking by ayo/i], ['Manual', /^booking by manual/i]].forEach(function (k) {
+    var slots = dailyCourtRows_(bl, bl.block(k[1], 1)).filter(function (x) { return bl.hasFormula(x.row, 7); });
+    var groups = {};
+    courts.filter(function (c) { return c.kategori === k[0]; }).forEach(function (c) {
+      var key = c.court + '|' + Number(c.harga);
+      var gr = groups[key] || (groups[key] = { court: Number(c.court), harga: Number(c.harga), jam: 0, metode: {} });
+      gr.jam = dailyNum_(gr.jam + Number(c.total_jam));
+      if (c.metode && c.metode !== 'BRI' && c.metode !== 'AYO') gr.metode[c.metode] = true;
+    });
+    var used = {};
+    var place = function (gr, slot) {
+      used[slot.row] = true;
+      if (Number(bl.val(slot.row, 3)) !== gr.harga) bl.set(slot.row, 3, gr.harga);
+      bl.set(slot.row, 4, gr.jam);
+      var m = Object.keys(gr.metode);
+      if (m.length) bl.set(slot.row, 8, 'Metode: ' + m.join(', '));
+    };
+    var left = [];
+    Object.keys(groups).forEach(function (key) {
+      var gr = groups[key];
+      var hit = slots.filter(function (s) { return !used[s.row] && s.court === gr.court && Number(bl.val(s.row, 3)) === gr.harga; })[0];
+      if (hit) place(gr, hit); else left.push(gr);
+    });
+    left.forEach(function (gr) {
+      var free = slots.filter(function (s) { return !used[s.row] && s.court === gr.court; });
+      if (free.length) place(gr, free[free.length - 1]);
+      else notes.push('Booking ' + k[0] + ' Court ' + gr.court + ' ' + gr.jam + ' jam @' + gr.harga + ' tidak muat di tabel (baris harga penuh).');
+    });
+  });
+
+  // ---- photoshoot / event per court: C = rate, D = hours, E/G/I = hours paid BRI/BCA/Mandiri ----
+  var extraTotal = 0, extraText = [];
+  [['Photoshoot', /^bookingan photoshoot/i, 14], ['Event - Lapangan', /^bookingan event/i, 15]].forEach(function (k) {
+    var rows = dailyCourtRows_(bl, bl.block(k[1], 3));
+    if (!rows.length) return;
+    var per = {};
+    other.filter(function (o) { return o.kategori === k[0]; }).forEach(function (o) {
+      var c = dailyCourt_(o.keterangan) || rows[0].court;
+      var p = per[c] || (per[c] = { jam: 0, nominal: 0, BRI: 0, BCA: 0, Mandiri: 0, ket: [] });
+      var jam = Number(o.jam) || 1;
+      p.jam = dailyNum_(p.jam + jam);
+      p.nominal = dailyNum_(p.nominal + Number(o.nominal));
+      p[o.metode === 'BCA' || o.metode === 'Mandiri' ? o.metode : 'BRI'] += jam;
+      if (o.keterangan) p.ket.push(o.keterangan + (o.metode && o.metode !== 'BRI' ? ' (' + o.metode + ')' : ''));
+    });
+    Object.keys(per).forEach(function (c) {
+      var p = per[c], row = rows.filter(function (x) { return x.court === Number(c); })[0] || rows[0];
+      bl.set(row.row, 3, Math.round(p.nominal / p.jam * 100) / 100);
+      bl.set(row.row, 4, p.jam);
+      if (p.BRI) bl.set(row.row, 5, p.BRI);
+      if (p.BCA) bl.set(row.row, 7, p.BCA);
+      if (p.Mandiri) bl.set(row.row, 9, p.Mandiri);
+      if (p.ket.length) bl.set(row.row, k[2], p.ket.join('; '));
+    });
+    if (k[0] === 'Event - Lapangan') {
+      // Extra event charges go to "Biaya Tambahan Event" of the first court row (its TOTAL row adds that cell).
+      other.filter(function (o) { return DAILY_EXTRA.indexOf(o.kategori) >= 0; }).forEach(function (o) {
+        extraTotal = dailyNum_(extraTotal + Number(o.nominal));
+        extraText.push(o.kategori.replace('Event - ', '') + (o.keterangan ? ' ' + o.keterangan : '') + ' ' + PCC.formatRupiah(o.nominal) + (o.metode && o.metode !== 'BRI' ? ' (' + o.metode + ')' : ''));
+      });
+      if (extraTotal) {
+        bl.set(rows[0].row, 14, extraTotal);
+        var ket = dailyText_(bl.val(rows[0].row, 15));
+        bl.set(rows[0].row, 15, (ket ? ket + '; ' : '') + extraText.join('; '));
+      }
+    }
+  });
+
+  // ---- coaching: manual block, F = amount (L copies F), G = coach / method ----
+  var coaching = other.filter(function (o) { return o.kategori === 'Coaching'; });
+  if (coaching.length) {
+    var crow = co ? co.block(/^booking manual coaching/i, 3) : [];
+    if (!crow.length) notes.push('Coaching ' + coaching.length + ' baris tidak bisa ditulis: tabel coaching tidak ditemukan.');
+    var buckets = crow.map(function () { return { n: 0, t: [] }; });
+    coaching.forEach(function (o, i) {
+      var b = buckets[Math.min(i, buckets.length - 1)];
+      if (!b) return;
+      b.n = dailyNum_(b.n + Number(o.nominal));
+      b.t.push((o.keterangan || 'Coaching') + (o.metode ? ' (' + o.metode + ')' : ''));
+    });
+    buckets.forEach(function (b, i) { if (b.t.length) { co.set(crow[i], 6, b.n); co.set(crow[i], 7, b.t.join('; ')); } });
+  }
+
+  // ---- product sales per shift: E = qty (BRI/cash), G = qty paid BCA, H = qty via AYO ----
+  var blocks = { 'Shift 1': pj.find(/^shift\s*1\b/i), 'Shift 2': pj.find(/^shift\s*2\b/i) };
+  var totalStart = pj.find(/^total shift/i);
+  var productRows = function (start) {
+    var map = {};
+    if (!start) return map;
+    for (var r = start + 4; r <= pj.v.length && pj.b(r).toUpperCase() !== 'TOTAL'; r++) if (pj.b(r)) map[dailyName_(pj.b(r))] = r;
+    return map;
+  };
+  var totalRows = productRows(totalStart);
+  Object.keys(blocks).forEach(function (shift) {
+    var start = blocks[shift];
+    if (!start) return;
+    var admins = reps.filter(function (r) { return r.shift === shift; }).map(function (r) { return r.admin; });
+    pj.set(start, 2, shift + (admins.length ? ' ' + admins.join(' & ') : ''));
+    var rowsByName = productRows(start);
+    var agg = {};
+    sales.filter(function (s) { return s.shift === shift; }).forEach(function (s) {
+      var key = dailyName_(s.produk);
+      var a = agg[key] || (agg[key] = { produk: s.produk, harga: Number(s.harga), qty: 0, bca: 0, ayo: 0 });
+      if (s.metode === 'AYO') a.ayo += Number(s.qty); else a.qty += Number(s.qty);
+      if (s.metode === 'BCA') a.bca += Number(s.qty);
+    });
+    Object.keys(agg).forEach(function (key) {
+      var a = agg[key], r = rowsByName[key];
+      if (!r) { notes.push(shift + ': produk "' + a.produk + '" (' + (a.qty + a.ayo) + ' x ' + PCC.formatRupiah(a.harga) + ') tidak ada di format, tidak ditulis.'); return; }
+      if (Number(pj.val(r, 3)) !== a.harga) {
+        pj.set(r, 3, a.harga);
+        if (totalRows[key]) pj.set(totalRows[key], 3, a.harga);
+        notes.push(shift + ': harga ' + a.produk + ' ' + PCC.formatRupiah(a.harga) + ' (berbeda dari format).');
+      }
+      pj.set(r, 5, a.qty);
+      if (a.bca) pj.set(r, 7, a.bca);
+      pj.set(r, 8, a.ayo);
+    });
+  });
+
+  // ---- notes: admin notes + anything that did not fit, under the Summary table ----
+  reps.forEach(function (r) { if (r.catatan) notes.push(r.shift + ' ' + r.admin + ': ' + r.catatan); });
+  var sm = ss.getSheetByName(DAILY.SUMMARY);
+  bl.flush(); pj.flush(); if (co) co.flush();
+  if (sm && notes.length) {
+    var at = dailyGrid_(sm).v.length + 2;
+    sm.getRange(at, 2).setValue('Catatan');
+    sm.getRange(at, 3).setValue(notes.join('\n'));
+  }
+  return notes;
+}
+
+/** One-off, from the editor: turns the Google Sheet in DAILY_TEMPLATE_ID into an empty template.
+ *  Clears the sample day's inputs (cells with formulas are never touched) and lets the product
+ *  TOTAL rows include the last product (Americano). */
+function prepareDailyTemplate() {
+  var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('DAILY_TEMPLATE_ID'));
+  var bl = dailyGrid_(ss.getSheetByName(DAILY.BL));
+  var top = bl.find(/^court$/i), ayoStart = bl.find(/^booking by ayo/i);
+  for (var r = top + 1; top && r < ayoStart; r++) if (dailyCourt_(bl.b(r))) [3, 4, 5].forEach(function (c) { bl.set(r, c, ''); });
+  dailyCourtRows_(bl, bl.block(/^booking by ayo/i, 1)).forEach(function (x) { [4, 5, 8].forEach(function (c) { bl.set(x.row, c, ''); }); });
+  dailyCourtRows_(bl, bl.block(/^booking by manual/i, 1)).forEach(function (x) { [4, 5, 6, 8].forEach(function (c) { bl.set(x.row, c, ''); }); });
+  [/^bookingan photoshoot/i, /^bookingan event/i, /^bookingan reclub/i].forEach(function (re, i) {
+    bl.block(re, 3).forEach(function (r) { [4, 5, 6, 7, 8, 9, 10, 14, 15].concat(i === 2 ? [3] : []).forEach(function (c) { bl.set(r, c, ''); }); });
+  });
+  bl.flush();
+
+  var pj = dailyGrid_(ss.getSheetByName(DAILY.PJ));
+  var fixes = [];
+  [/^shift\s*1\b/i, /^shift\s*2\b/i, /^total shift/i].forEach(function (re, i) {
+    var start = pj.find(re);
+    if (!start) return;
+    if (i < 2) pj.set(start, 2, 'Shift ' + (i + 1));
+    var first = start + 4, last = first, r = first;
+    for (; r <= pj.v.length && pj.b(r).toUpperCase() !== 'TOTAL'; r++) {
+      if (!pj.b(r)) continue;
+      last = r;
+      if (i < 2) { pj.set(r, 5, 0); pj.set(r, 6, ''); pj.set(r, 7, ''); pj.set(r, 8, 0); }
+    }
+    if (r <= pj.v.length) fixes.push([r, 9, '=SUM(I' + first + ':I' + last + ')'], [r, 10, '=SUM(J' + first + ':J' + last + ')']);
+  });
+  pj.flush();
+  var s1 = pj.find(/^shift\s*1\b/i), s2 = pj.find(/^shift\s*2\b/i), st = pj.find(/^total shift/i);
+  if (s1 && s2 && st) {
+    // Shift-total rows add the same product row of both shifts (the template's last row pointed at TOTAL).
+    var n1 = s1 + 4, n2 = s2 + 4;
+    for (var t = st + 4; t <= pj.v.length && pj.b(t).toUpperCase() !== 'TOTAL'; t++, n1++, n2++) {
+      if (pj.f[t - 1][4]) fixes.push([t, 5, '=E' + n1 + '+E' + n2]);
+      if (pj.f[t - 1][7]) fixes.push([t, 8, '=H' + n1 + '+H' + n2]);
+    }
+  }
+  fixes.forEach(function (x) { pj.sh.getRange(x[0], x[1]).setFormula(x[2]); });
+
+  var ik = ss.getSheetByName(DAILY.IK);
+  if (ik) {
+    var g = dailyGrid_(ik);
+    for (var i = 1; i <= g.v.length; i++) if (dailyCourt_(g.b(i))) [3, 4, 5].forEach(function (c) { g.set(i, c, ''); });
+    g.flush();
+  }
+  var co = ss.getSheetByName(DAILY.CO);
+  if (co) {
+    var c2 = dailyGrid_(co);
+    var gridEnd = c2.find(/^total$/i);
+    for (var y = 4; y <= gridEnd; y++) for (var x = 3; x <= 14; x++) c2.set(y, x, '');
+    c2.block(/^booking online/i, 3).forEach(function (row) { [4, 5].forEach(function (cc) { c2.set(row, cc, ''); }); });
+    c2.block(/^booking manual coaching/i, 3).forEach(function (row) { [5, 6, 7, 8, 9, 10, 11].forEach(function (cc) { c2.set(row, cc, ''); }); });
+    c2.flush();
+  }
+  ss.rename('TEMPLATE LAPORAN PEMASUKAN (WEB) - JANGAN DIHAPUS');
+  var rootId = PropertiesService.getScriptProperties().getProperty('REPORT_ROOT_FOLDER_ID');
+  if (rootId) moveIfElsewhere_(ss.getId(), childFolder_(DriveApp.getFolderById(rootId), 'LAPORAN ' + Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy')));
+  Logger.log('Template siap: ' + ss.getName());
+  return 'ok';
+}
+
+/** Rebuilds every daily file listed in Archive_Index (e.g. after switching to the template format). */
+function rebuildAllArchives() {
+  var dates = readTable_(SHEET.ARCHIVE).rows.map(function (r) { return String(r.tanggal); })
+    .filter(function (t) { return /^\d{4}-\d{2}-\d{2}$/.test(t); });
+  var ok = 0;
+  dates.forEach(function (t) { var res = rebuildArchive_(t); if (res.status === 'ok') ok++; else Logger.log(t + ': ' + JSON.stringify(res)); });
+  Logger.log('Arsip dibuat ulang: ' + ok + ' dari ' + dates.length);
+  return ok;
 }
