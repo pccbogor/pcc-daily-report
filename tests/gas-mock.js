@@ -76,7 +76,9 @@ function load(props) {
     getSheetByName: (n) => sheets[n] || null,
     insertSheet: (n) => (sheets[n] = makeSheet(n)),
     getSpreadsheetLocale: () => props.__LOCALE || 'en_US',
+    getId: () => 'DB',
   };
+  archives.db = { id: 'DB', title: 'database' };
   const cache = {};
   const ctx = {
     console,
@@ -99,7 +101,7 @@ function load(props) {
     DriveApp: {
       getFolderById: (id) => folder(id),
       getFileById: (id) => {
-        const a = archives.find((x) => x.id === id);
+        const a = id === 'DB' ? archives.db : archives.find((x) => x.id === id);
         return {
           moveTo: (f) => { a.folder = f.getId(); a.moves = (a.moves || 0) + 1; },
           setTrashed: (v) => { a.trashed = v; },

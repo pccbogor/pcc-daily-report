@@ -10,6 +10,10 @@
  *   ARCHIVE_FOLDER_ID   Drive folder for daily archive files (optional; archive is skipped if empty)
  *   ARCHIVE_MONTH_FOLDERS  "true" to file archives into "NOVEMBER 2026"-style subfolders (default: flat, like LAPORAN HARIAN today)
  *   REKAP_FOLDER_ID     Drive folder for monthly recap files ("Laporan Bulanan"); optional
+ *   REPORT_ROOT_FOLDER_ID  Drive folder "Report PCC Bogor". When set it overrides the three above:
+ *                       daily files go to   <root>/LAPORAN 2026/NOVEMBER 2026/LAPORAN HARIAN
+ *                       the monthly recap to <root>/LAPORAN 2026/NOVEMBER 2026/Laporan Bulanan
+ *                       (year/month folders are found by name, or created the first time)
  *   WA_TARGET           WhatsApp number that receives the shift recap, e.g. 62821xxxxxxx (used by the website's WA button)
  *   WA_TOKEN            optional Fonnte (fonnte.com) device token: when set, the recap is also sent automatically
  *
@@ -316,7 +320,7 @@ function submitReport_(raw, submissionId) {
     try { archive = rebuildArchive_(report.tanggal); } catch (err) { archive = { status: 'error', error: String(err.message || err) }; }
     // Keep this month's REKAP BULAN file current after every report.
     var recap = { status: 'skipped' };
-    if (PropertiesService.getScriptProperties().getProperty('REKAP_FOLDER_ID')) {
+    if (recapEnabled_()) {
       try { recap = exportRecap_(report.tanggal.slice(0, 7)); } catch (err) { recap = { status: 'error', error: String(err.message || err) }; }
     }
     var waText = PCC.waMessage(report, { products: cfg.products, shiftHours: cfg.shiftHours, coaches: cfg.coaches, courtShift: cfg.courtShift, version: version });
@@ -366,8 +370,7 @@ function dashboard_(from, to) {
 // =====================================================================
 function rebuildArchive_(tanggal) {
   var props = PropertiesService.getScriptProperties();
-  var folderId = props.getProperty('ARCHIVE_FOLDER_ID');
-  if (!folderId) return { status: 'skipped', reason: 'ARCHIVE_FOLDER_ID belum diisi' };
+  if (!props.getProperty('ARCHIVE_FOLDER_ID') && !props.getProperty('REPORT_ROOT_FOLDER_ID')) return { status: 'skipped', reason: 'ARCHIVE_FOLDER_ID belum diisi' };
   var folder = archiveFolderFor_(tanggal);
   var p = tanggal.split('-');
   var monthName = MONTHS_ID[Number(p[1]) - 1];
@@ -612,8 +615,8 @@ function buildRecapSheet_(ss, month) {
 /** Saves a static copy of the recap for `month` (YYYY-MM) as "REKAP BULAN NOVEMBER 2026 (WEB)" in REKAP_FOLDER_ID. */
 function exportRecap_(month) {
   if (!/^\d{4}-\d{2}$/.test(String(month))) throw new Error('Bulan harus berformat YYYY-MM.');
-  var folderId = PropertiesService.getScriptProperties().getProperty('REKAP_FOLDER_ID');
-  if (!folderId) throw new Error('REKAP_FOLDER_ID belum diisi di Script properties.');
+  if (!recapEnabled_()) throw new Error('REKAP_FOLDER_ID belum diisi di Script properties.');
+  var recapFolder = recapFolderFor_(month);
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName(RECAP.SHEET) || buildRecapSheet_(ss);
   var before = String(sh.getRange(2, 2).getValue());
@@ -632,7 +635,8 @@ function exportRecap_(month) {
   index.rows.forEach(function (r) { if (String(r.tanggal) === key) entry = r; });
   var out = null;
   if (entry && entry.file_id) { try { out = SpreadsheetApp.openById(entry.file_id); } catch (e) { out = null; } }
-  if (!out) { out = SpreadsheetApp.create(title); DriveApp.getFileById(out.getId()).moveTo(DriveApp.getFolderById(folderId)); }
+  if (!out) { out = SpreadsheetApp.create(title); DriveApp.getFileById(out.getId()).moveTo(recapFolder); }
+  else moveIfElsewhere_(out.getId(), recapFolder);
   var tab = out.getSheets()[0];
   tab.setName('Rekap');
   tab.clear();
@@ -748,8 +752,38 @@ function menuDeleteReport() {
 // =====================================================================
 // Monthly folders and one-off maintenance (run from the Apps Script editor)
 // =====================================================================
-/** Folder for a date's archive: ARCHIVE_FOLDER_ID, or its "NOVEMBER 2026" subfolder when ARCHIVE_MONTH_FOLDERS is true (created on first use). */
+/** Subfolder `name` of `folder`, created the first time it is needed. */
+function childFolder_(folder, name) {
+  var it = folder.getFoldersByName(name);
+  return it.hasNext() ? it.next() : folder.createFolder(name);
+}
+
+/** <REPORT_ROOT_FOLDER_ID>/LAPORAN YYYY/<BULAN YYYY> for a YYYY-MM or YYYY-MM-DD date, or null when the root is not set. */
+function monthFolder_(date) {
+  var rootId = PropertiesService.getScriptProperties().getProperty('REPORT_ROOT_FOLDER_ID');
+  if (!rootId) return null;
+  var p = String(date).split('-');
+  var year = childFolder_(DriveApp.getFolderById(rootId), 'LAPORAN ' + p[0]);
+  return childFolder_(year, MONTHS_ID[Number(p[1]) - 1] + ' ' + p[0]);
+}
+
+function recapEnabled_() {
+  var props = PropertiesService.getScriptProperties();
+  return !!(props.getProperty('REPORT_ROOT_FOLDER_ID') || props.getProperty('REKAP_FOLDER_ID'));
+}
+
+/** Folder for the REKAP BULAN file of `month` (YYYY-MM). */
+function recapFolderFor_(month) {
+  var m = monthFolder_(month);
+  if (m) return childFolder_(m, 'Laporan Bulanan');
+  return DriveApp.getFolderById(PropertiesService.getScriptProperties().getProperty('REKAP_FOLDER_ID'));
+}
+
+/** Folder for a date's archive: <root>/LAPORAN YYYY/<BULAN YYYY>/LAPORAN HARIAN when REPORT_ROOT_FOLDER_ID is set;
+ *  otherwise ARCHIVE_FOLDER_ID, or its "NOVEMBER 2026" subfolder when ARCHIVE_MONTH_FOLDERS is true. */
 function archiveFolderFor_(tanggal) {
+  var m = monthFolder_(tanggal);
+  if (m) return childFolder_(m, 'LAPORAN HARIAN');
   var props = PropertiesService.getScriptProperties();
   var folder = DriveApp.getFolderById(props.getProperty('ARCHIVE_FOLDER_ID'));
   if (String(props.getProperty('ARCHIVE_MONTH_FOLDERS')).toLowerCase() !== 'true') return folder;
@@ -776,6 +810,28 @@ function moveArchivesToMonthFolders() {
     try { if (moveIfElsewhere_(r.file_id, archiveFolderFor_(t))) moved++; } catch (e) { /* file deleted by hand */ }
   });
   Logger.log('Arsip dipindahkan: ' + moved);
+  return moved;
+}
+
+/** One-off: moves every daily archive and REKAP BULAN file listed in Archive_Index to where the current settings
+ *  put it, and the database spreadsheet itself into <root>/LAPORAN <this year>. Safe to run more than once. */
+function moveAllToReportFolder() {
+  var moved = 0;
+  readTable_(SHEET.ARCHIVE).rows.forEach(function (r) {
+    var t = String(r.tanggal);
+    if (!r.file_id) return;
+    var target = null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) target = archiveFolderFor_(t);
+    else if (/^REKAP-\d{4}-\d{2}$/.test(t) && recapEnabled_()) target = recapFolderFor_(t.slice(6));
+    if (!target) return;
+    try { if (moveIfElsewhere_(r.file_id, target)) moved++; } catch (e) { /* file deleted by hand */ }
+  });
+  var rootId = PropertiesService.getScriptProperties().getProperty('REPORT_ROOT_FOLDER_ID');
+  if (rootId) {
+    var year = childFolder_(DriveApp.getFolderById(rootId), 'LAPORAN ' + Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy'));
+    if (moveIfElsewhere_(SpreadsheetApp.getActiveSpreadsheet().getId(), year)) moved++;
+  }
+  Logger.log('File dipindahkan: ' + moved);
   return moved;
 }
 

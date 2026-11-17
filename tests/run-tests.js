@@ -315,6 +315,32 @@ test('every submit refreshes the REKAP BULAN file of that month; trigger install
   assert.strictEqual(e10.triggers[0].fn, 'autoExportPreviousMonth');
   assert.strictEqual(e10.triggers[0].day, 1);
 });
+test('REPORT_ROOT_FOLDER_ID: files go to LAPORAN YYYY/BULAN YYYY/(LAPORAN HARIAN|Laporan Bulanan), old files can be moved', () => {
+  const props = { ACCESS_PIN: '1', ARCHIVE_FOLDER_ID: 'HARIAN', ARCHIVE_MONTH_FOLDERS: 'true', REKAP_FOLDER_ID: 'BULANAN' };
+  const e11 = load(props);
+  e11.ctx.setup();
+  e11.call({ action: 'submit', pin: '1', submissionId: 'x1', report: sample({ tanggal: '2026-11-15' }) });
+  assert.strictEqual(e11.archives[0].folder, 'HARIAN/NOVEMBER 2026');
+  assert.strictEqual(e11.archives[1].folder, 'BULANAN');
+  props.REPORT_ROOT_FOLDER_ID = 'ROOT';
+  // "LAPORAN 2026" and "NOVEMBER 2026/LAPORAN HARIAN" already exist in Drive: reuse them, do not duplicate.
+  const y = e11.ctx.DriveApp.getFolderById('ROOT').createFolder('LAPORAN 2026');
+  y.createFolder('NOVEMBER 2026').createFolder('LAPORAN HARIAN');
+  assert.strictEqual(e11.ctx.moveAllToReportFolder(), 3, 'daily file, recap and database');
+  assert.strictEqual(e11.archives[0].folder, 'ROOT/LAPORAN 2026/NOVEMBER 2026/LAPORAN HARIAN');
+  assert.strictEqual(e11.archives[1].folder, 'ROOT/LAPORAN 2026/NOVEMBER 2026/Laporan Bulanan');
+  assert.strictEqual(e11.archives.db.folder, 'ROOT/LAPORAN 2026');
+  assert.strictEqual(e11.ctx.moveAllToReportFolder(), 0, 'second run moves nothing');
+  const dec = e11.call({ action: 'submit', pin: '1', submissionId: 'x2', report: sample({ tanggal: '2026-12-01' }) });
+  assert.strictEqual(dec.archive.status, 'ok');
+  assert.strictEqual(dec.recap.status, 'ok');
+  assert.strictEqual(e11.archives[2].folder, 'ROOT/LAPORAN 2026/DESEMBER 2026/LAPORAN HARIAN');
+  assert.strictEqual(e11.archives[3].folder, 'ROOT/LAPORAN 2026/DESEMBER 2026/Laporan Bulanan');
+  const jan = e11.call({ action: 'submit', pin: '1', submissionId: 'x3', report: sample({ tanggal: '2027-01-02' }) });
+  assert.strictEqual(jan.archive.status, 'ok');
+  assert.strictEqual(e11.archives[4].folder, 'ROOT/LAPORAN 2027/JANUARI 2027/LAPORAN HARIAN');
+  assert.deepStrictEqual(Object.keys(e11.folders.ROOT.children).sort(), ['LAPORAN 2026', 'LAPORAN 2027']);
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

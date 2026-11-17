@@ -75,6 +75,7 @@ PIN dan ID folder **tidak** ditulis di kode supaya tidak ikut ke GitHub.
 | `ARCHIVE_FOLDER_ID` | ID folder **LAPORAN HARIAN** | Ambil dari URL folder: `drive.google.com/drive/folders/`**`INI_ID_NYA`**. Kosongkan kalau belum mau arsip. |
 | `ARCHIVE_MONTH_FOLDERS` | `false` | `true` jika arsip mau dipisah per subfolder bulan (mis. `NOVEMBER 2026`). Default `false` mengikuti struktur folder sekarang (file per tanggal langsung di LAPORAN HARIAN). |
 | `REKAP_FOLDER_ID` | ID folder **Laporan Bulanan** | Tempat file `REKAP BULAN … (WEB)`. |
+| `REPORT_ROOT_FOLDER_ID` | ID folder **Report PCC Bogor** | **Disarankan.** Kalau diisi, tiga properti di atas diabaikan: arsip harian otomatis masuk `LAPORAN 2026/NOVEMBER 2026/LAPORAN HARIAN`, rekap ke `LAPORAN 2026/NOVEMBER 2026/Laporan Bulanan`. Folder tahun/bulan yang belum ada dibuat otomatis. Setelah mengisi, jalankan `moveAllToReportFolder` sekali dari editor untuk memindahkan file lama (termasuk database ke `LAPORAN <tahun>`). |
 | `WA_TARGET` | Nomor WhatsApp penerima rekap, mis. `628xxxxxxxxxx` | Dipakai tombol "Kirim rekap ke WhatsApp". Tidak disimpan di GitHub. |
 | `WA_TOKEN` | Token device Fonnte (opsional) | Isi hanya jika rekap mau terkirim **otomatis** tanpa menekan tombol. Lihat bagian WhatsApp. |
 
