@@ -1,0 +1,33 @@
+.kpis.three { grid-template-columns: repeat(3, 1fr); }
+.money-in { color: var(--ok); }
+.money-out { color: var(--err); }
+.entry { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; margin-bottom: 8px; }
+.entry .when { width: 54px; flex: none; text-align: center; border-radius: 12px; background: #F7EFEC; padding: 6px 0; }
+.entry .when b { display: block; font: 700 18px/1 var(--head); color: var(--maroon); }
+.entry .when span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; }
+.entry .what { flex: 1; min-width: 0; }
+.entry .what b { display: block; word-break: break-word; }
+.entry .what small { color: var(--muted); display: block; }
+.entry .amt { font-weight: 700; white-space: nowrap; text-align: right; }
+.entry .acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.entry .acts a, .entry .acts button { font-size: 12px; }
+.tiny-btn { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; cursor: pointer; color: var(--maroon); text-decoration: none; font-weight: 600; }
+.tiny-btn.danger { color: var(--err); }
+.item-card { border: 1px dashed var(--line); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; background: #FFFCFB; }
+.item-card .head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; color: var(--maroon); }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.files { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.group { border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; margin-bottom: 12px; overflow: hidden; }
+.group-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 12px; background: #F7EFEC; }
+.group-head b { font-family: var(--head); color: var(--maroon-900); font-size: 16px; }
+.pj-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-top: 1px solid var(--line); }
+.pj-row input[type=checkbox] { margin-top: 4px; width: 18px; height: 18px; accent-color: var(--maroon); }
+.pj-row .what { flex: 1; min-width: 0; }
+.pj-row .what small { color: var(--muted); display: block; }
+.pill.lunas { background: var(--ok-bg); color: var(--ok); }
+.pill.wait { background: var(--warn-bg); color: var(--warn); }
+.sheet-link { font-size: 12.5px; }
+@media (max-width: 640px) {
+  .kpis.three { grid-template-columns: 1fr; }
+  .row3 { grid-template-columns: 1fr 1fr; }
+}

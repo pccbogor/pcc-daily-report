@@ -20,6 +20,7 @@ function makeSheet(name, seed) {
       return range(sh, a, b, c || 1, d || 1);
     },
     deleteRows: (start, n) => { sh.data.splice(start - 1, n); },
+    deleteRow: (r) => { sh.data.splice(r - 1, 1); },
     clear: () => { sh.data = []; sh.formulas = {}; },
     setName: (n) => { sh.name = n; return ps; },
     copyTo: (dest) => { const c = makeSheet('Copy of ' + sh.name, { values: sh.data, formulas: sh.formulas }); dest.tabs['#' + Object.keys(dest.tabs).length] = c; return c; },
@@ -75,6 +76,7 @@ function load(props) {
       getId: () => id,
       getFilesByName: (n) => { const list = archives.filter((x) => x.folder === id && x.title === n && !x.trashed).map((x) => ({ getId: () => x.id })); let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
       getFoldersByName: (n) => { const list = f.children[n] ? [folder(f.children[n])] : []; let i = 0; return { hasNext: () => i < list.length, next: () => list[i++] }; },
+      createFile: (blob) => { const fid = 'FILE' + (++uploads.n); uploads.list.push({ id: fid, folder: id, name: blob.name, mime: blob.mime, size: blob.bytes.length }); return { getId: () => fid, getUrl: () => 'https://drive.google.com/file/d/' + fid + '/view' }; },
       createFolder: (n) => { const cid = id + '/' + n; f.children[n] = cid; folders[cid] = { id: cid, children: {} }; return folder(cid); },
     };
   };
@@ -86,6 +88,7 @@ function load(props) {
   };
   archives.db = { id: 'DB', title: 'database' };
   const cache = {};
+  const uploads = { n: 0, list: [] };
   const spreadsheet = (title, tabs) => {
     const a = {
       title, id: 'ARCH' + archives.length,
@@ -146,6 +149,8 @@ function load(props) {
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
     Utilities: {
       getUuid: () => crypto.randomUUID(),
+      base64Decode: (b) => Array.from(Buffer.from(b, 'base64')),
+      newBlob: (bytes, mime, name) => ({ bytes, mime, name }),
       formatDate: (d, tz, fmt) => {
         const j = new Date(d.getTime() + 7 * 3600000); // Asia/Jakarta, UTC+7
         const p = (n) => String(n).padStart(2, '0');
@@ -161,7 +166,7 @@ function load(props) {
   // Test exactly what gets pasted into Apps Script: the single bundled file.
   vm.runInContext(fs.readFileSync(path.join(dir, 'SALIN-KE-APPS-SCRIPT.gs'), 'utf8'), ctx, { filename: 'SALIN-KE-APPS-SCRIPT.gs' });
   const call = (body) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).body);
-  return { ctx, sheets, archives, call, fetches, folders, triggers };
+  return { ctx, sheets, archives, call, fetches, folders, triggers, uploads };
 }
 
 module.exports = { load };

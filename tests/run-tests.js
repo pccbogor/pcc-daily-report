@@ -515,6 +515,88 @@ test('addInventoryProducts: a tab per drink/snack, 220 ml and 250 ml kept apart,
   assert.strictEqual(d('Kara coco'.toLowerCase()), 0);
   assert.strictEqual(e14.ctx.addInventoryProducts().length, 0, 'second run adds nothing');
 });
+const FIN_PROPS = { ACCESS_PIN: '1', MANAGER_PIN: '9', PETTY_CASH_ID: 'PETTY', BUKTI_FOLDER_ID: 'BUKTI', PENGAJUAN_FOLDER_ID: 'PJ', PENGAJUAN_TEMPLATE_ID: 'PJTPL' };
+const PJ_TEMPLATE = { Sheet1: { values: [[], [], [], ['NO', 'KETERANGAN']], formulas: {} } };
+test('KEUANGAN: manager PIN only; Petty Cash add/edit/delete with photos in BUKTI & LAMPIRAN/<bulan>', () => {
+  const ledger = { April: { values: [[], ['', 'April'], ['', 'Sisa Saldo', '', '', 5483, '', '', 'Date', 'Transactions', 'Kredit', 'Debit', 'Category', 'Ke Account', 'Struk Nota'],
+    ['', '', '', '', '', '', '', new Date(2026, 10, 12), 'TF dari Mba Aca', 640000, '', '', '', ''],
+    ['', '', '', '', 26741217, '', '', new Date(2026, 10, 12), 'Token Listrik 200K', '', 203000, '', 'Listrik KWh 2', ''],
+    ['', '', '', '', 26746700, '', '', '12 November', 'Token Listrik 200K', '', 203000, '', '', '']], formulas: { '3,5': '=E6-E5' } } };
+  const e15 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: ledger, PJTPL: PJ_TEMPLATE } }));
+  e15.ctx.setup();
+  assert.strictEqual(e15.call({ action: 'fin_summary', pin: '1' }).ok, false, 'admin PIN cannot open finance');
+  const s0 = e15.call({ action: 'fin_summary', pin: '9' });
+  assert.ok(s0.ok, s0.error);
+  assert.strictEqual(s0.data.saldo, 5483);
+  assert.strictEqual(s0.data.petty.length, 3);
+  assert.strictEqual(s0.data.petty[0].row, 6, 'newest first');
+  assert.strictEqual(e15.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-11-18', transaksi: '', debit: 1 } }).ok, false, 'transaksi required');
+
+  const add = e15.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-11-18', transaksi: 'Token Listrik 100K', debit: '103.000', kategori: 'Listrik', akun: 'Listrik KWh 3' },
+    files: [{ name: 'IMG_1.HEIC', mime: 'image/heic', data: Buffer.from('foto').toString('base64') }] });
+  assert.ok(add.ok, add.error);
+  assert.strictEqual(add.row, 7);
+  const L = () => e15.archives.templates.PETTY.tabs.April.data;
+  assert.deepStrictEqual(L()[6].slice(8, 13), ['Token Listrik 100K', '', 103000, 'Listrik', 'Listrik KWh 3']);
+  assert.ok(Object.prototype.toString.call(L()[6][7]) === '[object Date]' && L()[6][7].getDate() === 18);
+  assert.ok(/drive\.google\.com\/file\/d\/FILE1/.test(L()[6][13]));
+  assert.deepStrictEqual(e15.uploads.list[0], { id: 'FILE1', folder: 'BUKTI/2026-11 NOVEMBER', name: '2026-11-18 Token Listrik 100K.heic', mime: 'image/heic', size: 4 });
+
+  const rowNow = e15.call({ action: 'fin_summary', pin: '9' }).data.petty[0];
+  assert.strictEqual(rowNow.row, 7);
+  assert.strictEqual(e15.call({ action: 'fin_petty_update', pin: '9', row: 7, fp: 'old', entry: { tanggal: '2026-11-18', transaksi: 'X', debit: 1 } }).ok, false, 'stale row is refused');
+  const upd = e15.call({ action: 'fin_petty_update', pin: '9', row: 7, fp: rowNow.fp, entry: { tanggal: '2026-11-18', transaksi: 'Token Listrik 100K KWh 3', debit: 103000, kategori: 'Listrik', akun: 'Listrik KWh 3' } });
+  assert.ok(upd.ok, upd.error);
+  assert.strictEqual(L()[6][8], 'Token Listrik 100K KWh 3');
+  assert.ok(/FILE1/.test(L()[6][13]), 'photo link kept on edit');
+  const fp2 = e15.call({ action: 'fin_summary', pin: '9' }).data.petty[0].fp;
+  assert.ok(e15.call({ action: 'fin_petty_delete', pin: '9', row: 7, fp: fp2 }).ok);
+  assert.strictEqual(L().length, 6);
+  assert.ok(e15.sheets.Fin_Log.data.length >= 4, 'every change is logged');
+});
+test('KEUANGAN: pengajuan per tanggal from the template, grouped by recipient, pay and delete', () => {
+  const e16 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: { April: { values: [[], [], ['', '', '', '', 0]], formulas: {} } }, PJTPL: PJ_TEMPLATE } }));
+  e16.ctx.setup();
+  const save = e16.call({ action: 'fin_pengajuan_save', pin: '9', tanggal: '2026-11-18', items: [
+    { keterangan: 'Token Listrik 500k', qty: 1, kategori: 'Listrik 1', satuan: 'Unit', nominal: 503000, atas_nama: 'Haidar', no_rekening: '7381070089', bank: 'BCA' },
+    { keterangan: 'Shojiru', qty: 2, kategori: 'Invoice', nominal: 100000, atas_nama: 'Ratna', no_rekening: '4103263455', bank: 'BCA', source: 'Transfer Owner' },
+    { keterangan: 'Token Listrik 500k', qty: 1, kategori: 'Listrik 2', satuan: 'Unit', nominal: 503000, atas_nama: 'Haidar', no_rekening: '7381070089', bank: 'BCA' }],
+    files: { 1: [{ name: 'nota.pdf', mime: 'application/pdf', data: Buffer.from('pdf').toString('base64') }] } });
+  assert.ok(save.ok, save.error);
+  assert.strictEqual(save.file.title, 'Pengajuan dan Reimbursment 18 November 2026 (WEB)');
+  const live = () => e16.archives.find((a) => a.title === save.file.title && !a.trashed);
+  const f1 = live();
+  assert.strictEqual(f1.folder, 'PJ');
+  const sh = f1.tabs.Sheet1;
+  assert.deepStrictEqual(sh.data.slice(4, 7).map((r) => [r[1], r[12]]), [['Token Listrik 500k', 'Haidar'], ['Token Listrik 500k', 'Haidar'], ['Shojiru', 'Ratna']], 'same recipient together');
+  assert.strictEqual(sh.formulas['5,12'], '=SUM(K5:K6)');
+  assert.strictEqual(sh.formulas['7,12'], '=SUM(K7:K7)');
+  assert.strictEqual(sh.formulas['7,11'], '=SUM(H7*C7)');
+  assert.ok(/FILE1/.test(sh.data[6][15]), 'nota link in STRUK/NOTA');
+  assert.strictEqual(e16.uploads.list[0].name, '2026-11-18 Pengajuan Shojiru.pdf');
+
+  const sum = e16.call({ action: 'fin_summary', pin: '9' }).data;
+  assert.strictEqual(sum.pengajuan.length, 1);
+  assert.strictEqual(sum.pengajuan[0].total, 503000 * 2 + 200000);
+  assert.deepStrictEqual(sum.suggest.accounts.Ratna, { no_rekening: '4103263455', bank: 'BCA' });
+
+  const ids = sum.pengajuan[0].items.filter((i) => i.atas_nama === 'Haidar').map((i) => i.item_id);
+  const pay = e16.call({ action: 'fin_pengajuan_pay', pin: '9', itemIds: ids, tanggalBayar: '2026-11-19', files: [{ name: 'tf.jpg', mime: 'image/jpeg', data: 'AAAA' }] });
+  assert.ok(pay.ok, pay.error);
+  assert.ok(f1.trashed, 'old version goes to the trash');
+  const f2 = live();
+  assert.ok(/^LUNAS\nhttps:/.test(f2.tabs.Sheet1.data[4][17]));
+  assert.ok(Object.prototype.toString.call(f2.tabs.Sheet1.data[4][6]) === '[object Date]', 'tanggal pembayaran filled');
+  const after = e16.call({ action: 'fin_summary', pin: '9' }).data.pengajuan[0];
+  assert.strictEqual(after.lunas, 503000 * 2);
+
+  const ratna = after.items.filter((i) => i.atas_nama === 'Ratna')[0];
+  assert.ok(e16.call({ action: 'fin_pengajuan_delete', pin: '9', itemId: ratna.item_id }).ok);
+  assert.strictEqual(e16.call({ action: 'fin_summary', pin: '9' }).data.pengajuan[0].items.length, 2);
+  ids.forEach((id) => e16.call({ action: 'fin_pengajuan_delete', pin: '9', itemId: id }));
+  assert.strictEqual(e16.call({ action: 'fin_summary', pin: '9' }).data.pengajuan.length, 0);
+  assert.ok(e16.archives.filter((a) => a.title === save.file.title).every((a) => a.trashed), 'no items left: file goes to the trash');
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

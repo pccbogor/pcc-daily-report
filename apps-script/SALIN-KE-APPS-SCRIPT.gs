@@ -584,6 +584,7 @@ function doPost(e) {
     return json_({ ok: false, error: 'Permintaan tidak valid.' });
   }
   try {
+    if (String(req.action || '').indexOf('fin_') === 0) return json_(finance_(req));
     checkPin_(req.pin);
     switch (req.action) {
       case 'ping': return json_({ ok: true, version: API_VERSION });
@@ -1725,4 +1726,437 @@ function addInventoryProducts() {
   if (current) rebuildInventoryMonth(month);
   Logger.log('Tab ditambahkan (' + added.length + '):\n' + added.join('\n'));
   return added;
+}
+
+// =====================================================================
+// KEUANGAN (manager only, MANAGER_PIN): Petty Cash ledger + Pengajuan & Reimbursment
+//   PETTY_CASH_ID          Google Sheet "Report Arus Keuangan Petty Cash (WEB)" (one running ledger)
+//   PENGAJUAN_FOLDER_ID    folder "PENGAJUAN & REIMBURSMENT" (one file per pengajuan date)
+//   PENGAJUAN_TEMPLATE_ID  Google Sheet template of PCC's pengajuan form
+//   BUKTI_FOLDER_ID        folder "BUKTI & LAMPIRAN" (uploads go to "2026-11 NOVEMBER" subfolders)
+// =====================================================================
+var FIN = {
+  ITEMS: 'Fin_Pengajuan', LOG: 'Fin_Log',
+  LEDGER_FIRST: 4, MAX_UPLOAD: 15 * 1024 * 1024,
+  PJ_FIRST: 5, PJ_ROWS: 21
+};
+var FIN_HEADERS = {
+  Fin_Pengajuan: ['item_id', 'tanggal_pengajuan', 'keterangan', 'qty', 'kategori', 'satuan', 'nominal', 'dp', 'tanggal_dp',
+    'atas_nama', 'no_rekening', 'bank', 'source', 'nota', 'status', 'tanggal_bayar', 'bukti_bayar', 'created_at', 'updated_at'],
+  Fin_Log: ['timestamp', 'action', 'detail']
+};
+Object.keys(FIN_HEADERS).forEach(function (k) { HEADERS[k] = FIN_HEADERS[k]; });
+
+function checkManagerPin_(pin) {
+  var expected = PropertiesService.getScriptProperties().getProperty('MANAGER_PIN');
+  if (!expected) throw new Error('Server belum dikonfigurasi (MANAGER_PIN kosong).');
+  var cache = CacheService.getScriptCache();
+  var fails = Number(cache.get('mgr_pin_fails') || 0);
+  if (fails >= 10) throw new Error('Terlalu banyak percobaan PIN salah. Coba lagi dalam 10 menit.');
+  if (String(pin || '') !== String(expected)) {
+    cache.put('mgr_pin_fails', String(fails + 1), 600);
+    throw new Error('PIN salah.');
+  }
+}
+
+/** Router for every "fin_*" action. */
+function finance_(req) {
+  checkManagerPin_(req.pin);
+  finSetup_();
+  switch (req.action) {
+    case 'fin_ping': return { ok: true };
+    case 'fin_summary': return { ok: true, data: finSummary_() };
+    case 'fin_petty_add': return finLocked_(function () { return finPettyAdd_(req.entry, req.files); });
+    case 'fin_petty_update': return finLocked_(function () { return finPettyUpdate_(req.row, req.fp, req.entry, req.files); });
+    case 'fin_petty_delete': return finLocked_(function () { return finPettyDelete_(req.row, req.fp); });
+    case 'fin_pengajuan_save': return finLocked_(function () { return finPengajuanSave_(req.tanggal, req.items, req.files); });
+    case 'fin_pengajuan_pay': return finLocked_(function () { return finPengajuanPay_(req.itemIds, req.tanggalBayar, req.files); });
+    case 'fin_pengajuan_delete': return finLocked_(function () { return finPengajuanDelete_(req.itemId); });
+    default: throw new Error('Aksi tidak dikenal.');
+  }
+}
+
+function finLocked_(fn) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) throw new Error('Server sedang sibuk. Coba lagi sebentar.');
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+/** Creates the finance tabs in the database spreadsheet the first time. */
+function finSetup_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  Object.keys(FIN_HEADERS).forEach(function (name) {
+    if (ss.getSheetByName(name)) return;
+    var sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, FIN_HEADERS[name].length).setValues([FIN_HEADERS[name]]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  });
+}
+
+function finLog_(action, detail) {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(FIN.LOG);
+  sh.getRange(sh.getLastRow() + 1, 1, 1, 3).setValues([[new Date(), action, JSON.stringify(detail).slice(0, 2000)]]);
+}
+
+function finProp_(key) {
+  var v = PropertiesService.getScriptProperties().getProperty(key);
+  if (!v) throw new Error(key + ' belum diisi di Script properties.');
+  return v;
+}
+
+function finDate_(t) {
+  if (!PCC.isValidDate(String(t))) throw new Error('Tanggal tidak valid.');
+  return String(t);
+}
+function finDateObj_(t) { var p = String(t).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]); }
+function finText_(v, max) { return String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max || 200); }
+function finMoney_(v) { var n = PCC.toNum(v); return n > 0 ? n : 0; }
+
+// ---------------- uploads: BUKTI & LAMPIRAN/<YYYY-MM BULAN>/<tanggal> <label>.<ext> ----------------
+function buktiFolder_(tanggal) {
+  var p = String(tanggal).split('-');
+  return childFolder_(DriveApp.getFolderById(finProp_('BUKTI_FOLDER_ID')), p[0] + '-' + p[1] + ' ' + MONTHS_ID[Number(p[1]) - 1]);
+}
+
+/** files: [{name, mime, data(base64)}] -> list of Drive URLs. */
+function saveBukti_(files, tanggal, label) {
+  files = (files || []).filter(function (f) { return f && f.data; });
+  if (!files.length) return [];
+  var total = files.reduce(function (s, f) { return s + String(f.data).length * 0.75; }, 0);
+  if (total > FIN.MAX_UPLOAD) throw new Error('Total lampiran terlalu besar (maks 15 MB). Kurangi jumlah/ukuran foto.');
+  var folder = buktiFolder_(tanggal);
+  var base = tanggal + ' ' + finText_(label, 80).replace(/[\\/:*?"<>|#%]/g, '-');
+  return files.map(function (f, i) {
+    var ext = (/\.[A-Za-z0-9]{2,5}$/.exec(String(f.name || '')) || ['.jpg'])[0].toLowerCase();
+    var name = base + (files.length > 1 ? ' (' + (i + 1) + ')' : '') + ext;
+    var blob = Utilities.newBlob(Utilities.base64Decode(String(f.data)), String(f.mime || 'application/octet-stream'), name);
+    return folder.createFile(blob).getUrl();
+  });
+}
+
+// ---------------- Petty Cash ledger (H Date, I Transaksi, J Kredit, K Debit, L Category, M Ke Account, N Struk Nota) ----------------
+function ledger_() {
+  var ss = SpreadsheetApp.openById(finProp_('PETTY_CASH_ID'));
+  return { ss: ss, sh: ss.getSheets()[0] };
+}
+
+function ledgerLastRow_(sh) {
+  var last = sh.getLastRow();
+  if (last < FIN.LEDGER_FIRST) return FIN.LEDGER_FIRST - 1;
+  var v = sh.getRange(FIN.LEDGER_FIRST, 8, last - FIN.LEDGER_FIRST + 1, 4).getValues();
+  for (var i = v.length - 1; i >= 0; i--) if (v[i].join('') !== '') return FIN.LEDGER_FIRST + i;
+  return FIN.LEDGER_FIRST - 1;
+}
+
+function ledgerRows_(sh) {
+  var last = ledgerLastRow_(sh);
+  if (last < FIN.LEDGER_FIRST) return [];
+  var n = last - FIN.LEDGER_FIRST + 1;
+  var vals = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getValues();
+  var shown = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getDisplayValues();
+  return vals.map(function (v, i) {
+    var d = v[0];
+    var iso = Object.prototype.toString.call(d) === '[object Date]' ? Utilities.formatDate(d, 'Asia/Jakarta', 'yyyy-MM-dd') : '';
+    return {
+      row: FIN.LEDGER_FIRST + i, tanggal: iso, tanggalText: shown[i][0], transaksi: String(v[1]),
+      kredit: Number(v[2]) || 0, debit: Number(v[3]) || 0, kategori: String(v[4]), akun: String(v[5]),
+      nota: String(v[6]), fp: finFingerprint_(shown[i])
+    };
+  });
+}
+
+function finFingerprint_(displayRow) {
+  var s = displayRow.join('|'), h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return String(h);
+}
+
+function pettyEntry_(e) {
+  e = e || {};
+  var out = { tanggal: finDate_(e.tanggal), transaksi: finText_(e.transaksi, 200), kredit: finMoney_(e.kredit), debit: finMoney_(e.debit),
+    kategori: finText_(e.kategori, 60), akun: finText_(e.akun, 80) };
+  if (!out.transaksi) throw new Error('Nama transaksi wajib diisi.');
+  if (!out.kredit && !out.debit) throw new Error('Isi nominal Kredit (masuk) atau Debit (keluar).');
+  return out;
+}
+
+function writeLedgerRow_(sh, row, e, nota) {
+  sh.getRange(row, 8, 1, 7).setValues([[finDateObj_(e.tanggal), e.transaksi, e.kredit || '', e.debit || '', e.kategori, e.akun, nota]]);
+}
+
+function finPettyAdd_(entry, files) {
+  var e = pettyEntry_(entry);
+  var links = saveBukti_(files, e.tanggal, e.transaksi);
+  var L = ledger_();
+  var last = ledgerLastRow_(L.sh), row = last + 1;
+  if (row > L.sh.getMaxRows()) L.sh.insertRowsAfter(L.sh.getMaxRows(), 50);
+  if (last >= FIN.LEDGER_FIRST) L.sh.getRange(last, 8, 1, 7).copyTo(L.sh.getRange(row, 8, 1, 7), { formatOnly: true });
+  writeLedgerRow_(L.sh, row, e, links.join('\n'));
+  finLog_('PETTY_ADD', { row: row, entry: e, files: links.length });
+  return { ok: true, row: row, links: links, saldo: Number(L.sh.getRange(3, 5).getValue()) || 0 };
+}
+
+function ledgerRowChecked_(sh, row, fp) {
+  row = Number(row);
+  var rows = ledgerRows_(sh).filter(function (r) { return r.row === row; });
+  if (!rows.length || rows[0].fp !== String(fp)) throw new Error('Baris ini sudah berubah di spreadsheet. Muat ulang data lalu coba lagi.');
+  return rows[0];
+}
+
+function finPettyUpdate_(row, fp, entry, files) {
+  var L = ledger_();
+  var old = ledgerRowChecked_(L.sh, row, fp);
+  var e = pettyEntry_(entry);
+  var links = saveBukti_(files, e.tanggal, e.transaksi);
+  var nota = [old.nota].concat(links).filter(String).join('\n');
+  writeLedgerRow_(L.sh, Number(row), e, nota);
+  finLog_('PETTY_UPDATE', { row: row, before: old, after: e, files: links.length });
+  return { ok: true, row: Number(row), links: links };
+}
+
+function finPettyDelete_(row, fp) {
+  var L = ledger_();
+  var old = ledgerRowChecked_(L.sh, row, fp);
+  L.sh.deleteRow(Number(row));
+  finLog_('PETTY_DELETE', { row: row, before: old });
+  return { ok: true };
+}
+
+// ---------------- Pengajuan & Reimbursment ----------------
+function pjItem_(raw, tanggal) {
+  raw = raw || {};
+  var it = {
+    item_id: finText_(raw.item_id, 40), tanggal_pengajuan: tanggal, keterangan: finText_(raw.keterangan, 200),
+    qty: PCC.toNum(raw.qty) || 1, kategori: finText_(raw.kategori, 60), satuan: finText_(raw.satuan, 30),
+    nominal: finMoney_(raw.nominal), dp: finMoney_(raw.dp), tanggal_dp: raw.tanggal_dp ? finDate_(raw.tanggal_dp) : '',
+    atas_nama: finText_(raw.atas_nama, 80), no_rekening: finText_(raw.no_rekening, 40).replace(/[^0-9\- ]/g, ''),
+    bank: finText_(raw.bank, 40), source: finText_(raw.source, 60)
+  };
+  if (!it.keterangan) throw new Error('Keterangan item wajib diisi.');
+  if (!it.nominal) throw new Error('Nominal "' + it.keterangan + '" wajib diisi.');
+  return it;
+}
+
+/** Items with plain YYYY-MM-DD dates (Sheets turns typed dates into Date values). */
+function pjRows_() {
+  return readTable_(FIN.ITEMS).rows.map(function (r) {
+    var o = cleanRecord_(r);
+    ['tanggal_pengajuan', 'tanggal_bayar', 'tanggal_dp'].forEach(function (k) { o[k] = String(o[k] || '').slice(0, 10); });
+    return o;
+  });
+}
+
+/** items: [{item_id?, keterangan, qty, ...}], files: {index: [file...]} — new items and edits for one pengajuan date. */
+function finPengajuanSave_(tanggal, items, files) {
+  tanggal = finDate_(tanggal);
+  if (!items || !items.length) throw new Error('Tambahkan minimal satu item.');
+  var table = readTable_(FIN.ITEMS), now = new Date(), saved = [];
+  items.forEach(function (raw, i) {
+    var it = pjItem_(raw, tanggal);
+    var links = saveBukti_((files || {})[i], tanggal, 'Pengajuan ' + it.keterangan);
+    var existing = it.item_id ? table.rows.filter(function (r) { return r.item_id === it.item_id; })[0] : null;
+    if (existing) {
+      var rec = extend_(cleanRecord_(existing), it);
+      rec.nota = [existing.nota].concat(links).filter(String).join('\n');
+      rec.updated_at = now;
+      delete rec._row;
+      writeObjectAt_(FIN.ITEMS, existing._row, rec);
+      saved.push(rec.item_id);
+    } else {
+      it.item_id = 'PJ-' + tanggal.replace(/-/g, '') + '-' + Utilities.getUuid().slice(0, 6).toUpperCase();
+      it.nota = links.join('\n'); it.status = 'Diajukan'; it.tanggal_bayar = ''; it.bukti_bayar = '';
+      it.created_at = now; it.updated_at = now;
+      appendObjects_(FIN.ITEMS, [it]);
+      saved.push(it.item_id);
+    }
+  });
+  SpreadsheetApp.flush();
+  var file = rebuildPengajuanFile_(tanggal);
+  finLog_('PJ_SAVE', { tanggal: tanggal, items: saved });
+  return { ok: true, tanggal: tanggal, itemIds: saved, file: file };
+}
+
+function finPengajuanPay_(itemIds, tanggalBayar, files) {
+  tanggalBayar = finDate_(tanggalBayar);
+  itemIds = (itemIds || []).map(String);
+  if (!itemIds.length) throw new Error('Pilih item yang sudah dibayar.');
+  var table = readTable_(FIN.ITEMS);
+  var hits = table.rows.filter(function (r) { return itemIds.indexOf(r.item_id) >= 0; });
+  if (!hits.length) throw new Error('Item tidak ditemukan.');
+  var links = saveBukti_(files, tanggalBayar, 'Bukti Bayar ' + hits.map(function (r) { return r.keterangan; }).join(', ').slice(0, 60));
+  var dates = {};
+  hits.forEach(function (r) {
+    var rec = cleanRecord_(r);
+    rec.status = 'Lunas'; rec.tanggal_bayar = tanggalBayar;
+    rec.bukti_bayar = [r.bukti_bayar].concat(links).filter(String).join('\n');
+    rec.updated_at = new Date();
+    delete rec._row;
+    writeObjectAt_(FIN.ITEMS, r._row, rec);
+    dates[String(rec.tanggal_pengajuan).slice(0, 10)] = true;
+  });
+  SpreadsheetApp.flush();
+  var files_ = Object.keys(dates).map(rebuildPengajuanFile_);
+  finLog_('PJ_PAY', { items: itemIds, tanggal_bayar: tanggalBayar, files: links.length });
+  return { ok: true, files: files_, links: links };
+}
+
+function finPengajuanDelete_(itemId) {
+  var table = readTable_(FIN.ITEMS);
+  var hit = table.rows.filter(function (r) { return r.item_id === String(itemId); })[0];
+  if (!hit) throw new Error('Item tidak ditemukan.');
+  var tanggal = String(cleanRecord_(hit).tanggal_pengajuan).slice(0, 10);
+  table.sheet.deleteRows(hit._row, 1);
+  SpreadsheetApp.flush();
+  var left = pjRows_().some(function (r) { return r.tanggal_pengajuan === tanggal; });
+  var file = left ? rebuildPengajuanFile_(tanggal) : removeArchive_('PJ-' + tanggal);
+  finLog_('PJ_DELETE', { item: itemId, tanggal: tanggal });
+  return { ok: true, file: file };
+}
+
+/** Rebuilds "Pengajuan dan Reimbursment <tanggal> (WEB)" from the template (previous version goes to the trash). */
+function rebuildPengajuanFile_(tanggal) {
+  var items = pjRows_().filter(function (r) { return r.tanggal_pengajuan === tanggal; });
+  // Keep items of the same recipient together so their Grand Total can be merged like PCC's own form.
+  var order = [];
+  items.forEach(function (it) { if (order.indexOf(it.atas_nama) < 0) order.push(it.atas_nama); });
+  items.sort(function (a, b) { return order.indexOf(a.atas_nama) - order.indexOf(b.atas_nama); });
+  var p = tanggal.split('-');
+  var title = 'Pengajuan dan Reimbursment ' + Number(p[2]) + ' ' + MONTHS_ID[Number(p[1]) - 1].charAt(0) + MONTHS_ID[Number(p[1]) - 1].slice(1).toLowerCase() + ' ' + p[0] + ' (WEB)';
+  var key = 'PJ-' + tanggal;
+  var entry = null;
+  readTable_(SHEET.ARCHIVE).rows.forEach(function (r) { if (String(r.tanggal) === key) entry = r; });
+  var file = DriveApp.getFileById(finProp_('PENGAJUAN_TEMPLATE_ID')).makeCopy(title, DriveApp.getFolderById(finProp_('PENGAJUAN_FOLDER_ID')));
+  try {
+    fillPengajuan_(SpreadsheetApp.openById(file.getId()).getSheets()[0], tanggal, items);
+  } catch (err) { file.setTrashed(true); throw err; }
+  if (entry && entry.file_id) { try { DriveApp.getFileById(entry.file_id).setTrashed(true); } catch (e) { /* gone */ } }
+  var url = 'https://docs.google.com/spreadsheets/d/' + file.getId() + '/edit';
+  var rec = { tanggal: key, file_id: file.getId(), url: url, updated_at: new Date() };
+  if (entry) writeObjectAt_(SHEET.ARCHIVE, entry._row, rec); else appendObjects_(SHEET.ARCHIVE, [rec]);
+  return { status: 'ok', url: url, title: title };
+}
+
+function fillPengajuan_(sh, tanggal, items) {
+  var extra = items.length - FIN.PJ_ROWS;
+  if (extra > 0) {
+    // Insert inside the item block so the TOTAL row's SUM range grows with it.
+    sh.insertRowsBefore(FIN.PJ_FIRST + FIN.PJ_ROWS - 1, extra);
+  }
+  var n = Math.max(items.length, FIN.PJ_ROWS);
+  sh.getRange(2, 1).setValue(finDateObj_(tanggal));
+  var rows = [], marks = [];
+  for (var i = 0; i < n; i++) {
+    var it = items[i];
+    if (!it) { rows.push([i + 1, '', '', '', '', '', '']); marks.push(['', '', '', '', '', '', '']); continue; }
+    rows.push([i + 1, it.keterangan, Number(it.qty) || 1, it.kategori, it.satuan, finDateObj_(it.tanggal_pengajuan),
+      it.tanggal_bayar ? finDateObj_(it.tanggal_bayar) : '']);
+    marks.push([Number(it.nominal) || 0, Number(it.dp) || '', it.tanggal_dp ? finDateObj_(it.tanggal_dp) : '', '', '', '', '']);
+  }
+  sh.getRange(FIN.PJ_FIRST, 1, n, 7).setValues(rows);
+  sh.getRange(FIN.PJ_FIRST, 8, n, 3).setValues(marks.map(function (m) { return m.slice(0, 3); }));
+  var right = [];
+  for (var j = 0; j < n; j++) {
+    var x = items[j];
+    right.push(x ? [x.atas_nama, x.no_rekening, x.bank, String(x.nota || ''), x.source,
+      x.status === 'Lunas' ? ['LUNAS'].concat(String(x.bukti_bayar || '').split('\n').filter(String)).join('\n') : ''] : ['', '', '', '', '', '']);
+  }
+  sh.getRange(FIN.PJ_FIRST, 13, n, 6).setValues(right);
+  for (var k = 0; k < n; k++) sh.getRange(FIN.PJ_FIRST + k, 11).setFormula('=SUM(H' + (FIN.PJ_FIRST + k) + '*C' + (FIN.PJ_FIRST + k) + ')');
+  // Grand Total per recipient, merged over that recipient's rows.
+  var start = 0;
+  while (start < items.length) {
+    var end = start;
+    while (end + 1 < items.length && items[end + 1].atas_nama === items[start].atas_nama) end++;
+    var r1 = FIN.PJ_FIRST + start, r2 = FIN.PJ_FIRST + end;
+    if (r2 > r1) sh.getRange(r1, 12, r2 - r1 + 1, 1).merge();
+    sh.getRange(r1, 12).setFormula('=SUM(K' + r1 + ':K' + r2 + ')');
+    start = end + 1;
+  }
+}
+
+// ---------------- summary for the website ----------------
+function finSummary_() {
+  var L = ledger_();
+  var rows = ledgerRows_(L.sh);
+  var items = pjRows_();
+  var files = {};
+  readTable_(SHEET.ARCHIVE).rows.forEach(function (r) { var t = String(r.tanggal); if (t.indexOf('PJ-') === 0) files[t.slice(3)] = String(r.url); });
+  var groups = {};
+  items.forEach(function (it) {
+    var g = groups[it.tanggal_pengajuan] || (groups[it.tanggal_pengajuan] = { tanggal: it.tanggal_pengajuan, items: [], total: 0, lunas: 0, url: files[it.tanggal_pengajuan] || '' });
+    var total = (Number(it.nominal) || 0) * (Number(it.qty) || 1);
+    g.items.push(it); g.total += total; if (it.status === 'Lunas') g.lunas += total;
+  });
+  var uniq = function (list) { var o = {}; list.forEach(function (x) { if (x) o[x] = true; }); return Object.keys(o).sort(); };
+  var accounts = {};
+  items.forEach(function (it) { if (it.atas_nama) accounts[it.atas_nama] = { no_rekening: it.no_rekening, bank: it.bank }; });
+  return {
+    saldo: Number(L.sh.getRange(3, 5).getValue()) || 0,
+    totalKredit: Number(L.sh.getRange(6, 5).getValue()) || 0,
+    totalDebit: Number(L.sh.getRange(5, 5).getValue()) || 0,
+    pettyUrl: L.ss.getUrl(),
+    petty: rows.slice(-150).reverse(),
+    pengajuan: Object.keys(groups).sort().reverse().map(function (k) { return groups[k]; }),
+    suggest: {
+      kategori: uniq(rows.map(function (r) { return r.kategori; })),
+      akun: uniq(rows.map(function (r) { return r.akun; })).slice(0, 200),
+      pjKategori: uniq(items.map(function (r) { return r.kategori; }).concat(['Invoice', 'Reimbursment', 'Listrik 1', 'Listrik 2', 'Listrik 3'])),
+      satuan: uniq(items.map(function (r) { return r.satuan; }).concat(['Unit', 'Pcs', 'Paket'])),
+      source: uniq(items.map(function (r) { return r.source; }).concat(['Transfer Owner', 'Petty Cash'])),
+      accounts: accounts
+    }
+  };
+}
+
+// =====================================================================
+// One-off from the editor: gather the old proof photos into BUKTI & LAMPIRAN/<YYYY-MM BULAN>.
+// Each file keeps its own name with the date in front ("2026-04-08 IMG_0555.HEIC"); the date comes from
+// the Petty Cash row that links to it, else from a date in its folder name, else from when it was uploaded.
+// Run with dryRun=true first (organizeBuktiDryRun) to see the plan in the log.
+// =====================================================================
+var BUKTI_SOURCES = [
+  '1pTgKtEcFyvkV93aMvlDfCPwl8LWm_yVM', '1oW5LYN2ryDd9O2SkKV4_lbL29EV6-vqY', '1JSHzPdK0saeUnDSsBFB5qd2UZUHt_Q0p',
+  '1hhTA4NRHtc0lKIZBzfa1v68sR4HAyVGF', '1F98_dcsJlNPEzniZzGKYBjVUnIldHOc6', '1L1Ew6pai0O49GjqxVijxBZ3dm1f7RlUk',
+  '15YrHDEw_AGFUltqIaRtoG4wF4dqmg78X', '1cmUuKwcY7zm7bmozu1PA4Smgre4AaVUp', '1ScqL7-UNGA1QBHuc1bgNhxunFyp8JLKT',
+  '1RswxF9ZPr_aysbSsYIB6v7x77sEHapDR'
+];
+
+function organizeBuktiDryRun() { return organizeBukti(true); }
+
+function organizeBukti(dryRun) {
+  dryRun = dryRun === true;
+  var linked = {};
+  ledgerRows_(ledger_().sh).forEach(function (r) {
+    (r.nota.match(/[-\w]{25,}/g) || []).forEach(function (id) { if (r.tanggal) linked[id] = r.tanggal; });
+  });
+  var MONTH_RE = /(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|july|agustus|september|oktober|november|desember)\s+(\d{4})/i;
+  var MONTH_IDX = { januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6, juli: 7, july: 7, agustus: 8, september: 9, oktober: 10, november: 11, desember: 12 };
+  var plan = [], seen = {};
+  var walk = function (folder, folderDate) {
+    var m = MONTH_RE.exec(folder.getName());
+    if (m) folderDate = m[3] + '-' + ('0' + MONTH_IDX[m[2].toLowerCase()]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var f = files.next();
+      if (seen[f.getId()]) continue;
+      seen[f.getId()] = true;
+      var t = linked[f.getId()] || folderDate || Utilities.formatDate(f.getDateCreated(), 'Asia/Jakarta', 'yyyy-MM-dd');
+      var name = /^\d{4}-\d{2}-\d{2} /.test(f.getName()) ? f.getName() : t + ' ' + f.getName();
+      plan.push({ file: f, tanggal: t, name: name, from: folder.getName() });
+    }
+    var subs = folder.getFolders();
+    while (subs.hasNext()) walk(subs.next(), folderDate);
+  };
+  BUKTI_SOURCES.forEach(function (id) { try { walk(DriveApp.getFolderById(id), null); } catch (e) { Logger.log('Lewati ' + id + ': ' + e); } });
+  var folders = {};
+  var monthFolder = function (t) { var k = t.slice(0, 7); return folders[k] || (folders[k] = buktiFolder_(t)); };
+  var lines = plan.map(function (p) { return p.from + ' -> ' + p.tanggal.slice(0, 7) + ' / ' + p.name; });
+  if (!dryRun) {
+    plan.forEach(function (p) {
+      p.file.moveTo(monthFolder(p.tanggal));
+      if (p.name !== p.file.getName()) p.file.setName(p.name);
+    });
+  }
+  Logger.log((dryRun ? 'RENCANA (belum dipindah) ' : 'DIPINDAH ') + plan.length + ' file:\n' + lines.join('\n'));
+  return plan.length;
 }
