@@ -112,7 +112,7 @@
       }
       var active = d.reports.filter(function (r) { return r.status === 'ACTIVE'; });
       if (action === 'history') return { ok: true, data: PCC.aggregate(active, [], p.from, p.to).reports };
-      if (action === 'dashboard') return { ok: true, data: PCC.aggregate(active, d.sales, p.from, p.to) };
+      if (action === 'dashboard') return { ok: true, data: PCC.aggregate(active, d.sales, p.from, p.to, d.courts) };
       if (action === 'report') {
         var r = active.filter(function (x) { return x.report_id === p.reportId; })[0];
         if (!r) throw new Error('Laporan tidak ditemukan.');

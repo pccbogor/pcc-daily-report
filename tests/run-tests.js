@@ -629,6 +629,25 @@ test('KEUANGAN: rapikanPettyCash turns text dates into dates, one format, rows i
   assert.ok(add.ok, add.error);
   assert.strictEqual(L().indexOf('Backdate'), 4, 'older transaction slots in by date');
 });
+test('dashboard splits court hours into AYO and Manual (total, per court)', () => {
+  const e18 = load({ ACCESS_PIN: '1' });
+  e18.ctx.setup();
+  e18.call({ action: 'submit', pin: '1', submissionId: 'h1', report: sample({ tanggal: '2026-11-20' }) });
+  const d = e18.call({ action: 'dashboard', pin: '1', from: '2026-11-20', to: '2026-11-20' }).data;
+  assert.strictEqual(d.kpi.hoursAyo, 8, 'C1 AYO 3 jam + C2 AYO 5 jam');
+  assert.strictEqual(d.kpi.hoursManual, 4, 'C1 Manual 2 x 2 jam');
+  assert.strictEqual(d.kpi.hoursAyo + d.kpi.hoursManual, d.kpi.totalHours);
+  assert.deepStrictEqual(d.courts.map((c) => [c.hoursAyo, c.hoursManual]), [[3, 4], [5, 0], [0, 0]]);
+  assert.strictEqual(PCC.aggregate([], [], '2026-11-20', '2026-11-20').kpi.hoursAyo, undefined, 'old callers unaffected');
+});
+test('KEUANGAN: one Petty Cash row can hold both Masuk and Keluar (owner pays the supplier directly)', () => {
+  const e19 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: { April: { values: [[], [], ['', '', '', '', 0]], formulas: {} } }, PJTPL: PJ_TEMPLATE } }));
+  e19.ctx.setup();
+  const r = e19.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-11-18', transaksi: 'Owner TF langsung ke supplier', kredit: 500000, debit: 500000, akun: 'CV Supplier' } });
+  assert.ok(r.ok, r.error);
+  const row = e19.archives.templates.PETTY.tabs.April.data[3];
+  assert.deepStrictEqual(row.slice(8, 13), ['Owner TF langsung ke supplier', 500000, 500000, '', 'CV Supplier']);
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

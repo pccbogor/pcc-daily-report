@@ -598,7 +598,8 @@
       '<div class="kpis">' +
       '<div class="kpi hl"><span>Total revenue</span><b>' + rp(k.grandTotal) + '</b></div>' +
       '<div class="kpi"><span>Total booking</span><b>' + fmtNum(k.totalBookings) + '</b></div>' +
-      '<div class="kpi"><span>Jam penggunaan court</span><b>' + fmtHours(k.totalHours) + '</b></div>' +
+      '<div class="kpi"><span>Jam penggunaan court</span><b>' + fmtHours(k.totalHours) + '</b>' +
+      (k.hoursAyo !== undefined ? '<small class="kpi-sub">AYO ' + fmtHours(k.hoursAyo) + ' · Manual ' + fmtHours(k.hoursManual) + '</small>' : '') + '</div>' +
       '<div class="kpi"><span>Total sales produk</span><b>' + rp(k.revenueSales) + '</b></div>' +
       '<div class="kpi"><span>Revenue AYO</span><b>' + rp(k.revenueAyo) + '</b></div>' +
       '<div class="kpi"><span>Revenue Manual</span><b>' + rp(k.revenueManual) + '</b></div>' +
@@ -609,7 +610,9 @@
       '<section class="card"><h2>Revenue per Court</h2>' + data.courts.map(function (c) {
         return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between"><b>Court ' + c.court + '</b><b>' + rp(c.revenue) + '</b></div>' +
           '<div class="bar"><i style="width:' + Math.round(c.revenue / maxCourt * 100) + '%"></i></div>' +
-          '<div class="hint" style="margin:4px 0 0">' + c.bookings + ' booking · ' + fmtHours(c.hours) + ' · AYO ' + rp(c.ayo) + ' · Manual ' + rp(c.manual) + '</div></div>';
+          '<div class="hint" style="margin:4px 0 0">' + c.bookings + ' booking · ' + fmtHours(c.hours) +
+          (c.hoursAyo !== undefined ? ' (AYO ' + fmtHours(c.hoursAyo) + ', Manual ' + fmtHours(c.hoursManual) + ')' : '') +
+          ' · AYO ' + rp(c.ayo) + ' · Manual ' + rp(c.manual) + '</div></div>';
       }).join('') + '</section></div>' +
       (data.daily.length > 1 ? '<section class="card"><h2>Tren revenue harian</h2><div class="chart-box"><canvas id="c-trend"></canvas></div></section>' : '') +
       '<div class="grid2"><section class="card"><h2>Produk terlaris</h2>' + (top.length ? top.map(function (p) {

@@ -245,7 +245,8 @@ var PCC = (function () {
    * reports: active Reports rows (objects with tanggal, shift, admin, report_id, updated_at + TOTAL_FIELDS).
    * sales: Sales rows ({tanggal, produk, qty, total}).
    */
-  function aggregate(reports, sales, from, to) {
+  /** courtRows (optional): Court_Bookings rows, used to split court hours into AYO and Manual. */
+  function aggregate(reports, sales, from, to, courtRows) {
     var inRange = function (d) { return d >= from && d <= to; };
     var rs = reports.filter(function (r) { return inRange(String(r.tanggal)); });
     var kpi = { grandTotal: 0, revenueCourt: 0, revenueSales: 0, revenueOther: 0, revenueAyo: 0, revenueManual: 0, totalBookings: 0, totalHours: 0, reportCount: rs.length, days: 0 };
@@ -265,6 +266,18 @@ var PCC = (function () {
       d.grandTotal += n('grand_total'); d.court += n('revenue_court'); d.sales += n('revenue_sales');
       d.other += n('revenue_lain'); d.hours += n('total_jam'); d.bookings += n('total_booking'); d.reports += 1;
     });
+    if (courtRows) {
+      var ids = {};
+      rs.forEach(function (r) { ids[r.report_id] = true; });
+      kpi.hoursAyo = 0; kpi.hoursManual = 0;
+      courts.forEach(function (c) { c.hoursAyo = 0; c.hoursManual = 0; });
+      courtRows.forEach(function (b) {
+        if (!ids[b.report_id] || !inRange(String(b.tanggal))) return;
+        var h = Number(b.total_jam) || 0, ayo = String(b.kategori) === 'AYO';
+        if (ayo) kpi.hoursAyo += h; else kpi.hoursManual += h;
+        courts.forEach(function (c) { if (Number(b.court) === c.court) { if (ayo) c.hoursAyo += h; else c.hoursManual += h; } });
+      });
+    }
     var dailyList = Object.keys(daily).sort().map(function (k) { return daily[k]; });
     kpi.days = dailyList.length;
     Object.keys(kpi).forEach(function (k) { kpi[k] = r2(kpi[k]); });

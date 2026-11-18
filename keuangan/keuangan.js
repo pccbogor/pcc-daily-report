@@ -234,16 +234,21 @@
   // ---------------- Petty Cash ----------------
   function pettyPage() {
     var d = state.data, ed = state.pettyEdit;
-    var masuk = ed ? (ed.kredit > 0 && !ed.debit) : false;
+    var jenis = ed ? (ed.kredit > 0 && ed.debit > 0 ? 'both' : ed.kredit > 0 ? 'in' : 'out') : 'out';
+    var amt = { kredit: ed ? ed.kredit || '' : '', debit: ed ? ed.debit || '' : '' };
     var months = {};
     d.petty.forEach(function (r) { if (r.tanggal) months[r.tanggal.slice(0, 7)] = true; });
     app.innerHTML =
       '<section class="card"><h2><span class="num">' + (ed ? '✎' : '+') + '</span>' + (ed ? 'Edit transaksi' : 'Catat transaksi Petty Cash') +
       '<span class="right pill">Saldo ' + rp(d.saldo) + '</span></h2>' +
       (ed ? '<div class="alert warn">Mengedit baris ' + ed.row + ' di spreadsheet. <button class="tiny-btn" id="cancel-edit">Batal</button></div>' : '') +
-      '<label class="f">Jenis <span class="req">*</span></label><div class="seg" id="jenis"><button type="button" data-v="out" class="' + (masuk ? '' : 'on') + '">Keluar (Debit)</button><button type="button" data-v="in" class="' + (masuk ? 'on' : '') + '">Masuk (Kredit)</button></div>' +
-      '<div class="row2"><div><label class="f" for="p-tgl">Tanggal <span class="req">*</span></label><input class="input" type="date" id="p-tgl" value="' + esc(ed ? ed.tanggal || today() : today()) + '"></div>' +
-      '<div><label class="f" for="p-nom">Nominal <span class="req">*</span></label><input class="input" id="p-nom" inputmode="numeric" placeholder="0" value="' + esc(ed ? (ed.debit || ed.kredit) : '') + '"></div></div>' +
+      '<label class="f">Jenis <span class="req">*</span></label><div class="seg" id="jenis">' +
+      [['out', 'Keluar (Debit)'], ['in', 'Masuk (Kredit)'], ['both', 'Masuk & Keluar']].map(function (o) {
+        return '<button type="button" data-v="' + o[0] + '" class="' + (jenis === o[0] ? 'on' : '') + '">' + o[1] + '</button>';
+      }).join('') + '</div>' +
+      '<div class="hint" id="p-both-hint" style="margin:6px 0 0"' + (jenis === 'both' ? '' : ' hidden') + '>Untuk uang yang masuk lalu langsung keluar lagi, mis. owner transfer langsung ke supplier: dicatat dalam satu baris, Kredit dan Debit terisi bersamaan.</div>' +
+      '<label class="f" for="p-tgl">Tanggal <span class="req">*</span></label><input class="input" type="date" id="p-tgl" value="' + esc(ed ? ed.tanggal || today() : today()) + '">' +
+      '<div id="p-amounts"></div>' +
       '<label class="f" for="p-trx">Nama transaksi <span class="req">*</span></label><input class="input" id="p-trx" placeholder="mis. Token Listrik 200K" value="' + esc(ed ? ed.transaksi : '') + '">' +
       '<div class="row2"><div><label class="f" for="p-kat">Kategori</label><input class="input" id="p-kat" list="dl-kat" value="' + esc(ed ? ed.kategori : '') + '"></div>' +
       '<div><label class="f" for="p-akun">Ke Account / Toko</label><input class="input" id="p-akun" list="dl-akun" placeholder="mis. Listrik KWh 2, Indomaret" value="' + esc(ed ? ed.akun : '') + '"></div></div>' +
@@ -254,8 +259,33 @@
       '<section class="card"><h2>Riwayat Petty Cash<span class="right"><select class="input" id="p-month" style="width:auto;padding:6px 10px"><option value="">Semua (150 terakhir)</option>' +
       Object.keys(months).sort().reverse().map(function (m) { var p = m.split('-'); return '<option value="' + m + '">' + BULAN[Number(p[1]) - 1] + ' ' + p[0] + '</option>'; }).join('') +
       '</select></span></h2><div id="p-list"></div></section>';
-    var jenis = masuk ? 'in' : 'out';
-    $$('#jenis button').forEach(function (b) { b.onclick = function () { jenis = b.dataset.v; $$('#jenis button').forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
+    var amountInput = function (id, label, value) {
+      return '<div><label class="f" for="' + id + '">' + label + ' <span class="req">*</span></label><input class="input" id="' + id + '" inputmode="numeric" placeholder="0" value="' + esc(value) + '"></div>';
+    };
+    var readAmounts = function () {
+      if ($('#p-kredit')) amt.kredit = $('#p-kredit').value;
+      if ($('#p-debit')) amt.debit = $('#p-debit').value;
+      if ($('#p-nom')) { if (jenis === 'in') amt.kredit = $('#p-nom').value; else amt.debit = $('#p-nom').value; }
+    };
+    var drawAmounts = function () {
+      $('#p-amounts').innerHTML = jenis === 'both'
+        ? '<div class="row2">' + amountInput('p-kredit', 'Masuk (Kredit)', amt.kredit) + amountInput('p-debit', 'Keluar (Debit)', amt.debit) + '</div>'
+        : amountInput('p-nom', jenis === 'in' ? 'Nominal masuk' : 'Nominal keluar', jenis === 'in' ? amt.kredit : amt.debit);
+      if ($('#p-kredit')) $('#p-kredit').oninput = function () { if (!$('#p-debit').dataset.touched) $('#p-debit').value = this.value; };
+      if ($('#p-debit')) $('#p-debit').oninput = function () { this.dataset.touched = '1'; };
+    };
+    drawAmounts();
+    $$('#jenis button').forEach(function (b) {
+      b.onclick = function () {
+        readAmounts();
+        if (b.dataset.v === 'both' && !amt.kredit) amt.kredit = amt.debit;
+        if (b.dataset.v === 'both' && !amt.debit) amt.debit = amt.kredit;
+        jenis = b.dataset.v;
+        $$('#jenis button').forEach(function (x) { x.classList.toggle('on', x === b); });
+        $('#p-both-hint').hidden = jenis !== 'both';
+        drawAmounts();
+      };
+    });
     bindPickers(app);
     if ($('#cancel-edit')) $('#cancel-edit').onclick = function () { state.pettyEdit = null; pettyPage(); };
     var list = function () {
@@ -268,10 +298,15 @@
     };
     $('#p-month').onchange = list; list();
     $('#p-save').onclick = function () {
-      var btn = this, nominal = num($('#p-nom').value);
-      var entry = { tanggal: $('#p-tgl').value, transaksi: $('#p-trx').value.trim(), kredit: jenis === 'in' ? nominal : 0, debit: jenis === 'out' ? nominal : 0,
+      var btn = this;
+      readAmounts();
+      var kredit = jenis === 'out' ? 0 : num(amt.kredit), debit = jenis === 'in' ? 0 : num(amt.debit);
+      var entry = { tanggal: $('#p-tgl').value, transaksi: $('#p-trx').value.trim(), kredit: kredit, debit: debit,
         kategori: $('#p-kat').value.trim(), akun: $('#p-akun').value.trim() };
-      if (!entry.tanggal || !entry.transaksi || !nominal) { $('#p-msg').innerHTML = '<div class="alert err">Tanggal, nama transaksi dan nominal wajib diisi.</div>'; return; }
+      var missing = jenis === 'both' ? !kredit || !debit : !(kredit || debit);
+      if (!entry.tanggal || !entry.transaksi || missing) {
+        $('#p-msg').innerHTML = '<div class="alert err">Tanggal, nama transaksi dan nominal' + (jenis === 'both' ? ' masuk & keluar' : '') + ' wajib diisi.</div>'; return;
+      }
       busy(btn, true, 'Menyimpan…');
       packFiles(PICK.petty).then(function (files) {
         return ed ? call('fin_petty_update', { row: ed.row, fp: ed.fp, entry: entry, files: files }) : call('fin_petty_add', { entry: entry, files: files });

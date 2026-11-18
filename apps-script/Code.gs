@@ -370,7 +370,8 @@ function getReport_(reportId) {
 function dashboard_(from, to) {
   if (!PCC.isValidDate(String(from)) || !PCC.isValidDate(String(to))) throw new Error('Rentang tanggal tidak valid.');
   var sales = readTable_(SHEET.SALES).rows.map(cleanRecord_);
-  return PCC.aggregate(activeReports_(), sales, from, to);
+  var courts = readTable_(SHEET.COURT).rows.map(cleanRecord_);
+  return PCC.aggregate(activeReports_(), sales, from, to, courts);
 }
 
 // =====================================================================
