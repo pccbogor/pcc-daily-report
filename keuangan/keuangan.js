@@ -24,6 +24,28 @@
       return /^https?:/.test(u) ? '<a class="tiny-btn" target="_blank" rel="noopener" href="' + esc(u) + '">📎 Bukti ' + (i + 1) + '</a>' : '<span class="tiny-btn">📎 ' + esc(u) + '</span>';
     }).join('');
   }
+  /** Existing attachments shown while editing; × removes one (it is dropped from the sheet and moved to the Drive trash on save). */
+  var KEEP = {};
+  function keptHtml(key, text, label) {
+    KEEP[key] = String(text || '').split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!KEEP[key].length) return '';
+    return '<div class="kept" data-kept="' + key + '"><div class="kept-label">' + esc(label) + '</div><div class="kept-list"></div></div>';
+  }
+  function bindKept(root) {
+    $$('[data-kept]', root).forEach(function (el) {
+      var key = el.dataset.kept;
+      var draw = function () {
+        $('.kept-list', el).innerHTML = KEEP[key].length ? KEEP[key].map(function (u, i) {
+          var name = /^https?:/.test(u) ? 'Lampiran ' + (i + 1) : u;
+          return '<span class="kept-chip">' + (/^https?:/.test(u) ? '<a target="_blank" rel="noopener" href="' + esc(u) + '">📎 ' + esc(name) + '</a>' : '📎 ' + esc(name)) +
+            '<button type="button" data-unkeep="' + i + '" aria-label="Hapus lampiran ini">×</button></span>';
+        }).join('') : '<span class="kept-none">Semua lampiran lama akan dihapus saat disimpan.</span>';
+        $$('[data-unkeep]', el).forEach(function (b) { b.onclick = function () { KEEP[key].splice(Number(b.dataset.unkeep), 1); draw(); }; });
+      };
+      draw();
+    });
+  }
+
   function toast(msg, kind) {
     var t = document.createElement('div'); t.className = 'toast ' + (kind || 'ok'); t.textContent = msg;
     document.body.appendChild(t); setTimeout(function () { t.remove(); }, 3800);
@@ -209,7 +231,8 @@
     if (r.debit) amt += (amt ? '<br>' : '') + '<span class="money-out">-' + rp(r.debit) + '</span>';
     return '<div class="entry"><div class="when"><b>' + p[0] + '</b><span>' + p[1] + '</span></div>' +
       '<div class="what"><b>' + esc(r.transaksi) + '</b><small>' + esc([r.kategori, r.akun].filter(Boolean).join(' · ') || '—') + '</small>' +
-      '<div class="acts">' + links(r.nota) + '<button class="tiny-btn" data-edit="' + r.row + '">Edit</button><button class="tiny-btn danger" data-del="' + r.row + '">Hapus</button></div></div>' +
+      '<div class="acts">' + links(r.nota) + (r.ref ? '<span class="pill">Dari Pengajuan</span>' :
+        '<button class="tiny-btn" data-edit="' + r.row + '">Edit</button><button class="tiny-btn danger" data-del="' + r.row + '">Hapus</button>') + '</div></div>' +
       '<div class="amt">' + amt + '</div></div>';
   }
 
@@ -254,7 +277,7 @@
       '<div><label class="f" for="p-akun">Ke Account / Toko</label><input class="input" id="p-akun" list="dl-akun" placeholder="mis. Listrik KWh 2, Indomaret" value="' + esc(ed ? ed.akun : '') + '"></div></div>' +
       datalist('dl-kat', d.suggest.kategori) + datalist('dl-akun', d.suggest.akun) +
       '<label class="f">Foto struk / nota ' + (ed ? '(tambahan)' : '') + '</label>' + pickerHtml('petty') +
-      (ed && ed.nota ? '<div class="acts" style="margin-top:6px">' + links(ed.nota) + '</div>' : '') +
+      (ed ? keptHtml('petty', ed.nota, 'Lampiran tersimpan (tekan × untuk menghapus)') : '') +
       '<div id="p-msg"></div><button class="btn" id="p-save" style="margin-top:14px">' + (ed ? 'Simpan perubahan' : 'Simpan ke Petty Cash') + '</button></section>' +
       '<section class="card"><h2>Riwayat Petty Cash<span class="right"><select class="input" id="p-month" style="width:auto;padding:6px 10px"><option value="">Semua (150 terakhir)</option>' +
       Object.keys(months).sort().reverse().map(function (m) { var p = m.split('-'); return '<option value="' + m + '">' + BULAN[Number(p[1]) - 1] + ' ' + p[0] + '</option>'; }).join('') +
@@ -287,6 +310,7 @@
       };
     });
     bindPickers(app);
+    bindKept(app);
     if ($('#cancel-edit')) $('#cancel-edit').onclick = function () { state.pettyEdit = null; pettyPage(); };
     var list = function () {
       var m = $('#p-month').value;
@@ -309,7 +333,7 @@
       }
       busy(btn, true, 'Menyimpan…');
       packFiles(PICK.petty).then(function (files) {
-        return ed ? call('fin_petty_update', { row: ed.row, fp: ed.fp, entry: entry, files: files }) : call('fin_petty_add', { entry: entry, files: files });
+        return ed ? call('fin_petty_update', { row: ed.row, fp: ed.fp, entry: entry, files: files, keep: KEEP.petty || [] }) : call('fin_petty_add', { entry: entry, files: files });
       }).then(function () {
         toast(ed ? 'Perubahan disimpan.' : 'Transaksi tercatat di Petty Cash.');
         state.pettyEdit = null; PICK.petty = []; load(true);
@@ -355,12 +379,14 @@
         '<div class="row3">' + f('nominal', 'Nominal / harga satuan <span class="req">*</span>', 'inputmode="numeric" placeholder="0"') + f('dp', 'DP / Disc', 'inputmode="numeric" placeholder="0"') + f('tanggal_dp', 'Tanggal DP', 'type="date"') + '</div>' +
         '<div class="row3">' + f('atas_nama', 'Atas nama (A/N)', 'list="dl-an"') + f('no_rekening', 'No. rekening', 'inputmode="numeric"') + f('bank', 'Bank') + '</div>' +
         f('source', 'Source', 'list="dl-src" placeholder="mis. Transfer Owner"') +
-        '<label class="f">Lampiran (foto nota / invoice)' + (it.item_id ? ' — tambahan' : '') + '</label>' + pickerHtml('pj' + i) + (it.nota ? '<div class="acts">' + links(it.nota) + '</div>' : '') + '</div>';
+        '<label class="f">Lampiran (foto nota / invoice)' + (it.item_id ? ' — tambahan' : '') + '</label>' + pickerHtml('pj' + i) +
+        (it.item_id ? keptHtml('nota' + i, it.nota, 'Nota / invoice tersimpan (tekan × untuk menghapus)') + keptHtml('bayar' + i, it.bukti_bayar, 'Bukti transfer tersimpan (tekan × untuk menghapus)') : '') + '</div>';
     }).join('');
     $$('#pj-items [data-rm]').forEach(function (b) { b.onclick = function () { syncItems(); var idx = Number(b.dataset.rm); state.pjItems.splice(idx, 1);
       for (var k = idx; k < state.pjItems.length; k++) PICK['pj' + k] = PICK['pj' + (k + 1)] || [];
       delete PICK['pj' + state.pjItems.length]; renderItems(); }; });
     bindPickers($('#pj-items'));
+    bindKept($('#pj-items'));
     $$('#pj-items [data-k="atas_nama"]').forEach(function (inp) {
       inp.onchange = function () {
         var acc = state.data.suggest.accounts[inp.value.trim()]; if (!acc) return;
@@ -383,7 +409,11 @@
     var btn = $('#pj-save');
     var bad = state.pjItems.filter(function (it) { return !it.keterangan || !num(it.nominal); });
     if (!state.pjDate || bad.length) { $('#pj-msg').innerHTML = '<div class="alert err">Isi tanggal, serta keterangan dan nominal setiap item.</div>'; return; }
-    var items = state.pjItems.map(function (it) { return Object.assign({}, it, { nominal: num(it.nominal), dp: num(it.dp), qty: num(it.qty) || 1 }); });
+    var items = state.pjItems.map(function (it, i) {
+      var o = Object.assign({}, it, { nominal: num(it.nominal), dp: num(it.dp), qty: num(it.qty) || 1 });
+      if (it.item_id) { o.nota_keep = KEEP['nota' + i] || []; o.bayar_keep = KEEP['bayar' + i] || []; }
+      return o;
+    });
     busy(btn, true, 'Menyimpan…');
     var keys = state.pjItems.map(function (x, i) { return i; }).filter(function (i) { return (PICK['pj' + i] || []).length; });
     Promise.all(keys.map(function (k) { return packFiles(PICK['pj' + k]); })).then(function (packed) {
@@ -413,6 +443,10 @@
         }).join('') +
         '<div class="pj-row" data-paybox="' + gi + '" hidden><div class="what"><div class="row2"><div><label class="f" style="margin-top:0">Tanggal bayar</label><input class="input" type="date" data-paydate value="' + today() + '"></div>' +
         '<div><label class="f" style="margin-top:0">Bukti transfer</label>' + pickerHtml('pay' + gi) + '</div></div>' +
+        '<label class="f">Dibayar dari</label><div class="seg" data-via="' + gi + '">' +
+        '<button type="button" data-v="owner" class="' + (/petty/i.test(g.items.map(function (x) { return x.source; }).join(' ')) ? '' : 'on') + '">Transfer Owner</button>' +
+        '<button type="button" data-v="petty" class="' + (/petty/i.test(g.items.map(function (x) { return x.source; }).join(' ')) ? 'on' : '') + '">Petty Cash</button></div>' +
+        '<div class="hint" style="margin:6px 0 0">Otomatis dicatat di Petty Cash: Transfer Owner = Masuk &amp; Keluar (saldo tetap), Petty Cash = Keluar.</div>' +
         '<button class="btn" data-paygo="' + gi + '" style="margin-top:10px">Tandai lunas</button></div></div></div>';
     }).join('') : '<div class="empty">Belum ada pengajuan dari website.</div>';
     bindPickers($('#pj-list'));
@@ -422,14 +456,18 @@
         $('[data-paybox="' + gi + '"]').hidden = !$$('[data-pay="' + gi + '"]').some(function (x) { return x.checked; });
       };
     });
+    $$('[data-via] button').forEach(function (b) {
+      b.onclick = function () { $$('button', b.parentNode).forEach(function (x) { x.classList.toggle('on', x === b); }); };
+    });
     $$('[data-paygo]').forEach(function (b) {
       b.onclick = function () {
         var gi = b.dataset.paygo, box = $('[data-paybox="' + gi + '"]');
         var ids = $$('[data-pay="' + gi + '"]').filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
         busy(b, true, 'Menyimpan…');
         packFiles(PICK['pay' + gi]).then(function (files) {
-          return call('fin_pengajuan_pay', { itemIds: ids, tanggalBayar: $('[data-paydate]', box).value, files: files });
-        }).then(function () { toast(ids.length + ' item ditandai lunas.'); clearPicks('pay'); load(true); }, function (e) { busy(b, false, 'Tandai lunas'); toast(e.message, 'err'); });
+          var via = ($('[data-via="' + gi + '"] button.on') || {}).dataset;
+          return call('fin_pengajuan_pay', { itemIds: ids, tanggalBayar: $('[data-paydate]', box).value, files: files, via: via ? via.v : 'owner' });
+        }).then(function () { toast(ids.length + ' item lunas & tercatat di Petty Cash.'); clearPicks('pay'); load(true); }, function (e) { busy(b, false, 'Tandai lunas'); toast(e.message, 'err'); });
       };
     });
     $$('[data-pjdel]').forEach(function (b) {

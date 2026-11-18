@@ -1372,10 +1372,10 @@ function finance_(req) {
     case 'fin_ping': return { ok: true };
     case 'fin_summary': return { ok: true, data: finSummary_() };
     case 'fin_petty_add': return finLocked_(function () { return finPettyAdd_(req.entry, req.files); });
-    case 'fin_petty_update': return finLocked_(function () { return finPettyUpdate_(req.row, req.fp, req.entry, req.files); });
+    case 'fin_petty_update': return finLocked_(function () { return finPettyUpdate_(req.row, req.fp, req.entry, req.files, req.keep); });
     case 'fin_petty_delete': return finLocked_(function () { return finPettyDelete_(req.row, req.fp); });
     case 'fin_pengajuan_save': return finLocked_(function () { return finPengajuanSave_(req.tanggal, req.items, req.files); });
-    case 'fin_pengajuan_pay': return finLocked_(function () { return finPengajuanPay_(req.itemIds, req.tanggalBayar, req.files); });
+    case 'fin_pengajuan_pay': return finLocked_(function () { return finPengajuanPay_(req.itemIds, req.tanggalBayar, req.files, req.via); });
     case 'fin_pengajuan_delete': return finLocked_(function () { return finPengajuanDelete_(req.itemId); });
     default: throw new Error('Aksi tidak dikenal.');
   }
@@ -1465,7 +1465,7 @@ function ledgerRows_(sh) {
   var last = ledgerLastRow_(sh);
   if (last < FIN.LEDGER_FIRST) return [];
   var n = last - FIN.LEDGER_FIRST + 1;
-  var vals = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getValues();
+  var vals = sh.getRange(FIN.LEDGER_FIRST, 8, n, 9).getValues();
   var shown = sh.getRange(FIN.LEDGER_FIRST, 8, n, 7).getDisplayValues();
   var tz = sheetTz_(sh);
   return vals.map(function (v, i) {
@@ -1474,7 +1474,7 @@ function ledgerRows_(sh) {
     return {
       row: FIN.LEDGER_FIRST + i, tanggal: iso, tanggalText: shown[i][0], transaksi: String(v[1]),
       kredit: Number(v[2]) || 0, debit: Number(v[3]) || 0, kategori: String(v[4]), akun: String(v[5]),
-      nota: String(v[6]), fp: finFingerprint_(shown[i])
+      nota: String(v[6]), ref: String(v[8] || ''), fp: finFingerprint_(shown[i])
     };
   });
 }
@@ -1519,12 +1519,13 @@ function ledgerRowChecked_(sh, row, fp) {
   return rows[0];
 }
 
-function finPettyUpdate_(row, fp, entry, files) {
+function finPettyUpdate_(row, fp, entry, files, keep) {
   var L = ledger_();
   var old = ledgerRowChecked_(L.sh, row, fp);
+  if (old.ref) throw new Error('Transaksi ini dibuat otomatis dari Pengajuan. Ubah lewat menu Pengajuan.');
   var e = pettyEntry_(entry);
   var links = saveBukti_(files, e.tanggal, e.transaksi);
-  var nota = [old.nota].concat(links).filter(String).join('\n');
+  var nota = keepLinks_(old.nota, keep).concat(links).join('\n');
   writeLedgerRow_(L.sh, Number(row), e, nota);
   sortLedger_(L.sh);
   finLog_('PETTY_UPDATE', { row: row, before: old, after: e, files: links.length });
@@ -1534,6 +1535,7 @@ function finPettyUpdate_(row, fp, entry, files) {
 function finPettyDelete_(row, fp) {
   var L = ledger_();
   var old = ledgerRowChecked_(L.sh, row, fp);
+  if (old.ref) throw new Error('Transaksi ini dibuat otomatis dari Pengajuan. Hapus/batalkan lewat menu Pengajuan.');
   L.sh.deleteRow(Number(row));
   finLog_('PETTY_DELETE', { row: row, before: old });
   return { ok: true };
@@ -1574,7 +1576,8 @@ function finPengajuanSave_(tanggal, items, files) {
     var existing = it.item_id ? table.rows.filter(function (r) { return r.item_id === it.item_id; })[0] : null;
     if (existing) {
       var rec = extend_(cleanRecord_(existing), it);
-      rec.nota = [existing.nota].concat(links).filter(String).join('\n');
+      rec.nota = keepLinks_(existing.nota, raw.nota_keep).concat(links).join('\n');
+      rec.bukti_bayar = keepLinks_(existing.bukti_bayar, raw.bayar_keep).join('\n');
       rec.updated_at = now;
       delete rec._row;
       writeObjectAt_(FIN.ITEMS, existing._row, rec);
@@ -1589,11 +1592,12 @@ function finPengajuanSave_(tanggal, items, files) {
   });
   SpreadsheetApp.flush();
   var file = rebuildPengajuanFile_(tanggal);
+  syncPettyFromPengajuan_(saved);
   finLog_('PJ_SAVE', { tanggal: tanggal, items: saved });
   return { ok: true, tanggal: tanggal, itemIds: saved, file: file };
 }
 
-function finPengajuanPay_(itemIds, tanggalBayar, files) {
+function finPengajuanPay_(itemIds, tanggalBayar, files, via) {
   tanggalBayar = finDate_(tanggalBayar);
   itemIds = (itemIds || []).map(String);
   if (!itemIds.length) throw new Error('Pilih item yang sudah dibayar.');
@@ -1605,6 +1609,7 @@ function finPengajuanPay_(itemIds, tanggalBayar, files) {
   hits.forEach(function (r) {
     var rec = cleanRecord_(r);
     rec.status = 'Lunas'; rec.tanggal_bayar = tanggalBayar;
+    if (via === 'petty') rec.source = 'Petty Cash'; else if (via === 'owner') rec.source = 'Transfer Owner';
     rec.bukti_bayar = [r.bukti_bayar].concat(links).filter(String).join('\n');
     rec.updated_at = new Date();
     delete rec._row;
@@ -1613,6 +1618,7 @@ function finPengajuanPay_(itemIds, tanggalBayar, files) {
   });
   SpreadsheetApp.flush();
   var files_ = Object.keys(dates).map(rebuildPengajuanFile_);
+  syncPettyFromPengajuan_(itemIds);
   finLog_('PJ_PAY', { items: itemIds, tanggal_bayar: tanggalBayar, files: links.length });
   return { ok: true, files: files_, links: links };
 }
@@ -1626,6 +1632,8 @@ function finPengajuanDelete_(itemId) {
   SpreadsheetApp.flush();
   var left = pjRows_().some(function (r) { return r.tanggal_pengajuan === tanggal; });
   var file = left ? rebuildPengajuanFile_(tanggal) : removeArchive_('PJ-' + tanggal);
+  syncPettyFromPengajuan_([String(itemId)]);
+  trashBukti_([hit.nota, hit.bukti_bayar].join('\n'));
   finLog_('PJ_DELETE', { item: itemId, tanggal: tanggal });
   return { ok: true, file: file };
 }
@@ -1818,9 +1826,9 @@ function sortLedger_(sh) {
   if (n < 2) return;
   var order = [];
   for (var i = 0; i < n; i++) order.push([i + 1]);
-  var tmp = sh.getRange(FIN.LEDGER_FIRST, 15, n, 1);
+  var tmp = sh.getRange(FIN.LEDGER_FIRST, 17, n, 1);
   tmp.setValues(order);
-  sh.getRange(FIN.LEDGER_FIRST, 8, n, 8).sort([{ column: 8, ascending: true }, { column: 15, ascending: true }]);
+  sh.getRange(FIN.LEDGER_FIRST, 8, n, 10).sort([{ column: 8, ascending: true }, { column: 17, ascending: true }]);
   tmp.clearContent();
 }
 
@@ -1912,4 +1920,68 @@ function bersihkanLaporanDobel(dryRun) {
   });
   Logger.log((dryRun ? 'RENCANA ' : 'SELESAI ') + (lines.length ? lines.join('\n') : 'tidak ada laporan dobel'));
   return dryRun ? lines.length : removed;
+}
+
+// ---------------- attachments kept / removed on edit ----------------
+/** Lines of `current` (links or file names) that the user kept; the rest are moved to the Drive trash.
+ *  `keep` undefined = keep everything (older clients). */
+function keepLinks_(current, keep) {
+  var lines = String(current || '').split('\n').map(function (x) { return x.trim(); }).filter(String);
+  if (!Array.isArray(keep)) return lines;
+  var kept = lines.filter(function (x) { return keep.indexOf(x) >= 0; });
+  trashBukti_(lines.filter(function (x) { return kept.indexOf(x) < 0; }).join('\n'));
+  return kept;
+}
+
+/** Moves uploaded proof files to the Drive trash — only files inside BUKTI & LAMPIRAN, never anything else. */
+function trashBukti_(text) {
+  var root = PropertiesService.getScriptProperties().getProperty('BUKTI_FOLDER_ID');
+  (String(text || '').match(/\/d\/([-\w]{25,})/g) || []).forEach(function (m) {
+    try {
+      var f = DriveApp.getFileById(m.slice(3));
+      var inBukti = false, p = f.getParents();
+      while (p.hasNext() && !inBukti) {
+        var folder = p.next();
+        if (folder.getId() === root) inBukti = true;
+        var up = folder.getParents();
+        while (up.hasNext()) if (up.next().getId() === root) inBukti = true;
+      }
+      if (inBukti) f.setTrashed(true);
+    } catch (e) { /* already gone or not ours */ }
+  });
+}
+
+// ---------------- Pengajuan -> Petty Cash ----------------
+/** Each paid (Lunas) pengajuan item has one Petty Cash row, linked by its item_id in column P.
+ *  Paid by owner transfer: Kredit and Debit (money in and straight out). Paid from petty cash: Debit only.
+ *  Unpaid or deleted items lose their row. */
+function syncPettyFromPengajuan_(itemIds) {
+  if (!itemIds || !itemIds.length || !PropertiesService.getScriptProperties().getProperty('PETTY_CASH_ID')) return;
+  var items = {};
+  pjRows_().forEach(function (it) { items[it.item_id] = it; });
+  var L = ledger_(), sh = L.sh;
+  var byRef = {};
+  ledgerRows_(sh).forEach(function (r) { if (r.ref) byRef[r.ref] = r; });
+  var removeRows = [];
+  itemIds.forEach(function (id) {
+    var it = items[id], row = byRef[id];
+    if (!it || it.status !== 'Lunas') { if (row) removeRows.push(row.row); return; }
+    var total = (Number(it.nominal) || 0) * (Number(it.qty) || 1);
+    var viaPetty = /petty/i.test(String(it.source));
+    var e = {
+      tanggal: it.tanggal_bayar || it.tanggal_pengajuan,
+      transaksi: 'Pengajuan: ' + it.keterangan + ((Number(it.qty) || 1) > 1 ? ' (' + it.qty + ' ' + (it.satuan || 'x') + ')' : ''),
+      kredit: viaPetty ? 0 : total, debit: total, kategori: it.kategori || 'Pengajuan', akun: it.atas_nama
+    };
+    var nota = [it.nota, it.bukti_bayar].join('\n').split('\n').filter(function (x) { return x.trim(); }).join('\n');
+    var at = row ? row.row : ledgerLastRow_(sh) + 1;
+    if (!row) {
+      if (at > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 50);
+      if (at - 1 >= FIN.LEDGER_FIRST) sh.getRange(at - 1, 8, 1, 7).copyTo(sh.getRange(at, 8, 1, 7), { formatOnly: true });
+    }
+    writeLedgerRow_(sh, at, e, nota);
+    sh.getRange(at, 16).setValue(id);
+  });
+  removeRows.sort(function (a, b) { return b - a; }).forEach(function (r) { sh.deleteRow(r); });
+  sortLedger_(sh);
 }

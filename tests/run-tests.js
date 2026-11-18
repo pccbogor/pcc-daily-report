@@ -624,7 +624,7 @@ test('KEUANGAN: rapikanPettyCash turns text dates into dates, one format, rows i
   assert.deepStrictEqual(L(), ['A', 'C', 'B', 'J', 'E', 'D', 'F', 'G (tanpa tanggal)', 'I', 'H', 'K']);
   const dates = e17.archives.templates.PETTY.tabs.April.data.slice(3, 13).map((r) => r[7]);
   assert.ok(dates.every((d) => Object.prototype.toString.call(d) === '[object Date]'), 'all real dates');
-  assert.strictEqual(e17.archives.templates.PETTY.tabs.April.data[3][14], '', 'helper column cleared');
+  assert.strictEqual(e17.archives.templates.PETTY.tabs.April.data[3][16], '', 'helper column cleared');
   const add = e17.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-05-15', transaksi: 'Backdate', debit: 1000 } });
   assert.ok(add.ok, add.error);
   assert.strictEqual(L().indexOf('Backdate'), 4, 'older transaction slots in by date');
@@ -681,6 +681,56 @@ test('bersihkanLaporanDobel keeps the report with data and deletes the empty dup
   const left = e21.call({ action: 'history', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data;
   assert.deepStrictEqual(left.map((r) => r.report_id), [full.reportId]);
   assert.strictEqual(e21.ctx.bersihkanLaporanDobel(), 0, 'nothing left to clean');
+});
+test('KEUANGAN: a pengajuan marked Lunas becomes a Petty Cash row, kept in sync on edit and delete', () => {
+  const e22 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: { April: { values: [[], [], ['', '', '', '', 0],
+    ['', '', '', '', '', '', '', new Date(2026, 10, 1), 'Saldo awal', 100000, '', '', '', '']], formulas: {} } }, PJTPL: PJ_TEMPLATE } }));
+  e22.ctx.setup();
+  const save = e22.call({ action: 'fin_pengajuan_save', pin: '9', tanggal: '2026-11-18', items: [
+    { keterangan: 'Shojiru', qty: 2, satuan: 'Pcs', kategori: 'Invoice', nominal: 100000, atas_nama: 'Ratna' },
+    { keterangan: 'Token Listrik', qty: 1, nominal: 203000, atas_nama: 'PLN' }],
+    files: { 0: [{ name: 'nota.jpg', mime: 'image/jpeg', data: 'AAAA' }] } });
+  assert.ok(save.ok, save.error);
+  const L = () => e22.archives.templates.PETTY.tabs.April.data.slice(3).filter((r) => r[8]);
+  assert.strictEqual(L().length, 1, 'not paid yet: nothing in Petty Cash');
+  const [shojiru, token] = save.itemIds;
+  assert.ok(e22.call({ action: 'fin_pengajuan_pay', pin: '9', itemIds: [shojiru], tanggalBayar: '2026-11-19', via: 'owner',
+    files: [{ name: 'tf.jpg', mime: 'image/jpeg', data: 'AAAA' }] }).ok);
+  assert.ok(e22.call({ action: 'fin_pengajuan_pay', pin: '9', itemIds: [token], tanggalBayar: '2026-11-18', via: 'petty' }).ok);
+  const rows = L();
+  assert.deepStrictEqual(rows.map((r) => [r[8], r[9], r[10], r[12], r[15]]), [
+    ['Saldo awal', 100000, '', '', undefined],
+    ['Pengajuan: Token Listrik', '', 203000, 'PLN', token],
+    ['Pengajuan: Shojiru (2 Pcs)', 200000, 200000, 'Ratna', shojiru]], 'owner transfer = in & out, petty cash = out only, sorted by date');
+  assert.ok(/FILE1/.test(rows[2][13]) && /FILE2/.test(rows[2][13]), 'nota and bukti transfer linked');
+
+  const sum = e22.call({ action: 'fin_summary', pin: '9' }).data;
+  const linked = sum.petty.find((r) => r.ref === shojiru);
+  assert.ok(linked, 'summary shows the linked row');
+  assert.strictEqual(e22.call({ action: 'fin_petty_delete', pin: '9', row: linked.row, fp: linked.fp }).ok, false, 'linked rows are changed via Pengajuan');
+
+  // Edit the item: amount follows; removing the nota (keep = []) drops the link from both places.
+  const item = sum.pengajuan[0].items.find((i) => i.item_id === shojiru);
+  assert.ok(e22.call({ action: 'fin_pengajuan_save', pin: '9', tanggal: '2026-11-18', items: [Object.assign({}, item, { nominal: 120000, nota_keep: [] })] }).ok);
+  const after = L().find((r) => r[15] === shojiru);
+  assert.deepStrictEqual([after[9], after[10]], [240000, 240000]);
+  assert.ok(!/FILE1/.test(after[13]) && /FILE2/.test(after[13]), 'removed nota gone, bukti transfer kept');
+
+  assert.ok(e22.call({ action: 'fin_pengajuan_delete', pin: '9', itemId: shojiru }).ok);
+  assert.ok(!L().some((r) => r[15] === shojiru), 'deleted item removes its Petty Cash row');
+  assert.ok(L().some((r) => r[15] === token));
+});
+test('KEUANGAN: Petty Cash edit can remove attachments', () => {
+  const e23 = load(Object.assign({}, FIN_PROPS, { __TEMPLATES: { PETTY: { April: { values: [[], [], ['', '', '', '', 0]], formulas: {} } }, PJTPL: PJ_TEMPLATE } }));
+  e23.ctx.setup();
+  e23.call({ action: 'fin_petty_add', pin: '9', entry: { tanggal: '2026-11-18', transaksi: 'Galon', debit: 24000 },
+    files: [{ name: 'a.jpg', mime: 'image/jpeg', data: 'AAAA' }, { name: 'b.jpg', mime: 'image/jpeg', data: 'AAAA' }] });
+  const r = e23.call({ action: 'fin_summary', pin: '9' }).data.petty[0];
+  const lines = r.nota.split('\n');
+  assert.strictEqual(lines.length, 2);
+  assert.ok(e23.call({ action: 'fin_petty_update', pin: '9', row: r.row, fp: r.fp, keep: [lines[1]],
+    entry: { tanggal: '2026-11-18', transaksi: 'Galon', debit: 24000 } }).ok);
+  assert.strictEqual(e23.call({ action: 'fin_summary', pin: '9' }).data.petty[0].nota, lines[1]);
 });
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;

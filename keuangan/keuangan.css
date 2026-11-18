@@ -46,3 +46,11 @@
 .cam-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .cam-btns .btn { flex: 2; }
 .cam-btns .chip-btn { flex: 1; background: #fff; }
+
+.kept { margin-top: 8px; }
+.kept-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.kept-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.kept-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 4px 3px 10px; font-size: 12px; }
+.kept-chip a { color: var(--maroon); text-decoration: none; font-weight: 600; }
+.kept-chip button { width: 20px; height: 20px; border-radius: 50%; border: 0; background: var(--err-bg); color: var(--err); cursor: pointer; line-height: 20px; padding: 0; font-weight: 700; }
+.kept-none { font-size: 12px; color: var(--err); }
