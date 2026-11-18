@@ -397,7 +397,7 @@
     if (!v.errors.length && !d.editOf) checkOverwrite(rep);
   }
 
-  // Same tanggal + shift + nama already stored? Submitting replaces the whole report, so say so first.
+  // Same tanggal + shift already stored (any admin name)? Submitting replaces the whole report, so say so first.
   function checkOverwrite(rep) {
     var key = PCC.reportKey(rep.tanggal, rep.shift, rep.admin);
     API.call('history', { from: rep.tanggal, to: rep.tanggal }).then(function (r) {

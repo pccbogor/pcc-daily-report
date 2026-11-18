@@ -21,7 +21,7 @@ Semua langkah dilakukan dengan **akun Google PCC** (pemilik folder LAPORAN HARIA
 | Membuka website | Website meminta PIN, lalu mengambil daftar produk, shift, dan metode bayar dari sheet `Master_Produk` dan `Config`. |
 | Mengisi form | Draft tersimpan otomatis di HP/laptop itu. Kalau halaman tertutup, isian tidak hilang. |
 | Menekan **Kirim Laporan** | Apps Script memvalidasi, menghitung ulang semua total, menulis ke `Reports`, `Court_Bookings`, `Sales`, `Other_Income`, mencatat `Audit_Log`, lalu memperbarui arsip harian di Drive. |
-| Kirim ulang (tanggal + shift + nama sama) | Laporan lama diganti seluruhnya, versi naik (v2, v3, …), versi lama tetap ada di `Audit_Log`. Website memperingatkan dulu sebelum menimpa. |
+| Kirim ulang (tanggal + shift sama, nama admin boleh beda) | Laporan lama diganti seluruhnya, versi naik (v2, v3, …), versi lama tetap ada di `Audit_Log`. Website memperingatkan dulu sebelum menimpa. |
 | Shift 1 mengirim laporan | Hanya berisi penjualan (dan pemasukan lain). Halaman Booking Court dilewati. |
 | Shift 2 mengirim laporan | Berisi penjualan Shift 2 **dan booking court satu hari penuh**. Tersimpan sebagai laporan terpisah di file yang sama; summary harian menjumlahkan kedua shift. Kalau Shift 1 mencoba mengisi booking court, server menolak supaya tidak terhitung dua kali. |
 

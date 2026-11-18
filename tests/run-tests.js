@@ -648,6 +648,40 @@ test('KEUANGAN: one Petty Cash row can hold both Masuk and Keluar (owner pays th
   const row = e19.archives.templates.PETTY.tabs.April.data[3];
   assert.deepStrictEqual(row.slice(8, 13), ['Owner TF langsung ke supplier', 500000, 500000, '', 'CV Supplier']);
 });
+test('one report per tanggal + shift: a different admin name replaces it instead of adding a second one', () => {
+  const e20 = load({ ACCESS_PIN: '1' });
+  e20.ctx.setup();
+  const a = e20.call({ action: 'submit', pin: '1', submissionId: 'k1', report: sample({ tanggal: '2026-11-18', admin: 'Lutfi' }) });
+  const b = e20.call({ action: 'submit', pin: '1', submissionId: 'k2', report: sample({ tanggal: '2026-11-18', admin: 'Muhammad Lutfhi Ashiddiqi', sales: [] }) });
+  assert.strictEqual(a.action, 'CREATE');
+  assert.strictEqual(b.action, 'UPDATE');
+  assert.strictEqual(b.reportId, a.reportId);
+  const active = e20.call({ action: 'history', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data;
+  assert.strictEqual(active.length, 1);
+  assert.strictEqual(active[0].admin, 'Muhammad Lutfhi Ashiddiqi', 'latest sender is recorded');
+  const d = e20.call({ action: 'dashboard', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data;
+  assert.strictEqual(d.kpi.revenueSales, 0, 'totals are the latest report only, not summed');
+  const other = e20.call({ action: 'submit', pin: '1', submissionId: 'k3', report: sample({ tanggal: '2026-11-18', shift: 'Shift 1', admin: 'Naki', courts: [] }) });
+  assert.strictEqual(other.action, 'CREATE', 'the other shift is still its own report');
+});
+test('bersihkanLaporanDobel keeps the report with data and deletes the empty duplicate', () => {
+  const e21 = load({ ACCESS_PIN: '1' });
+  e21.ctx.setup();
+  const full = e21.call({ action: 'submit', pin: '1', submissionId: 'z1', report: sample({ tanggal: '2026-11-18', admin: 'Muhammad Lutfhi Ashiddiqi' }) });
+  // An old-style duplicate: same tanggal + shift, other name, nothing in it.
+  const R = e21.sheets.Reports, H = e21.ctx.HEADERS.Reports;
+  const dup = R.data[1].slice();
+  dup[H.indexOf('report_id')] = 'PCC-20261118-OLD000'; dup[H.indexOf('admin')] = 'Lutfi';
+  ['grand_total', 'total_booking', 'sales_qty', 'total_jam', 'revenue_sales', 'revenue_court'].forEach((k) => { dup[H.indexOf(k)] = 0; });
+  R.data.push(dup);
+  assert.strictEqual(e21.call({ action: 'history', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data.length, 2);
+  assert.strictEqual(e21.ctx.bersihkanLaporanDobelDryRun(), 1);
+  assert.strictEqual(e21.call({ action: 'history', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data.length, 2, 'dry run deletes nothing');
+  assert.strictEqual(e21.ctx.bersihkanLaporanDobel(), 1);
+  const left = e21.call({ action: 'history', pin: '1', from: '2026-11-18', to: '2026-11-18' }).data;
+  assert.deepStrictEqual(left.map((r) => r.report_id), [full.reportId]);
+  assert.strictEqual(e21.ctx.bersihkanLaporanDobel(), 0, 'nothing left to clean');
+});
 test('a full sheet grows its grid before appending (no "outside grid" error)', () => {
   const cb = env.sheets.Court_Bookings;
   cb.maxRows = cb.getLastRow(); // simulate a sheet whose grid is exactly full

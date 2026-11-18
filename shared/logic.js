@@ -42,8 +42,9 @@ var PCC = (function () {
   function r2(n) { return Math.round(n * 100) / 100; }
   function text(s) { return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ' ').trim(); }
 
-  function reportKey(tanggal, shift, admin) {
-    return [text(tanggal), text(shift).toLowerCase(), text(admin).toLowerCase()].join('|');
+  /** One report per tanggal + shift: whoever sends last for that shift replaces it (the admin name is just recorded). */
+  function reportKey(tanggal, shift) {
+    return [text(tanggal).slice(0, 10), text(shift).toLowerCase()].join('|');
   }
 
   function isValidDate(s) {

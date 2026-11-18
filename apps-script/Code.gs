@@ -282,7 +282,7 @@ function submitReport_(raw, submissionId) {
     var now = new Date();
     var reports = readTable_(SHEET.REPORTS);
     var existing = null;
-    reports.rows.forEach(function (r) { if (r.report_key === key && r.status === 'ACTIVE') existing = r; });
+    reports.rows.forEach(function (r) { if (r.status === 'ACTIVE' && PCC.reportKey(String(cleanRecord_(r).tanggal), r.shift) === key) existing = r; });
 
     var reportId, version, createdAt, action;
     if (existing) {
@@ -1884,4 +1884,32 @@ function perbaikiTanggalPettyCash() {
   sortLedger_(sh);
   Logger.log('Zona waktu sheet: ' + tz + '. Tanggal dikembalikan ke hari yang benar: ' + fixed);
   return fixed;
+}
+
+/** From the editor: when one tanggal + shift has more than one active report (from before reports were keyed by
+ *  tanggal + shift only), keep one and delete the others. Kept: the only report with data in it; if several have
+ *  data, the most recently updated. bersihkanLaporanDobelDryRun() only logs the plan. */
+function bersihkanLaporanDobelDryRun() { return bersihkanLaporanDobel(true); }
+
+function bersihkanLaporanDobel(dryRun) {
+  dryRun = dryRun === true;
+  var groups = {};
+  activeReports_().forEach(function (r) { var k = PCC.reportKey(r.tanggal, r.shift); (groups[k] = groups[k] || []).push(r); });
+  var lines = [], removed = 0;
+  Object.keys(groups).forEach(function (k) {
+    var list = groups[k];
+    if (list.length < 2) return;
+    var hasData = function (r) { return (Number(r.grand_total) || 0) > 0 || (Number(r.total_booking) || 0) > 0 || (Number(r.sales_qty) || 0) > 0; };
+    var withData = list.filter(hasData);
+    var pool = withData.length ? withData : list;
+    pool.sort(function (a, b) { return String(b.updated_at).localeCompare(String(a.updated_at)); });
+    var keep = pool[0];
+    list.forEach(function (r) {
+      if (r === keep) return;
+      lines.push(k + ': hapus ' + r.report_id + ' (' + r.admin + ', ' + PCC.formatRupiah(r.grand_total) + '), simpan ' + keep.report_id + ' (' + keep.admin + ', ' + PCC.formatRupiah(keep.grand_total) + ')');
+      if (!dryRun) { deleteReport_(r.report_id, 'Laporan dobel untuk ' + k + '; yang dipakai ' + keep.report_id); removed++; }
+    });
+  });
+  Logger.log((dryRun ? 'RENCANA ' : 'SELESAI ') + (lines.length ? lines.join('\n') : 'tidak ada laporan dobel'));
+  return dryRun ? lines.length : removed;
 }

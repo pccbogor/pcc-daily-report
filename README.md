@@ -22,7 +22,7 @@ index.html + assets/                     apps-script/Code.gs + Logic.gs        �
 
 - **Revenue booking** = harga per jam × total jam; **total jam** = jumlah booking × durasi per booking. Satu court boleh punya banyak tarif.
 - **Booking court dicatat per hari oleh Shift 2**; penjualan dicatat per shift.
-- **Satu laporan per tanggal + shift + nama admin.** Kirim ulang dengan kombinasi yang sama **menimpa** laporan itu (data terakhir yang dipakai); versi lama tetap tercatat di sheet `Audit_Log`.
+- **Satu laporan per tanggal + shift.** Kirim ulang untuk tanggal + shift yang sama (nama admin boleh beda) **menimpa** laporan itu (data terakhir yang dipakai); versi lama tetap tercatat di sheet `Audit_Log`.
 - **Klik ganda / sinyal putus** tidak membuat data dobel: setiap form punya ID pengiriman unik yang dicek server.
 - Semua total dihitung ulang di server dari baris transaksi; sheet `Daily_Summary` hanya berisi rumus.
 - Tanpa `API_URL`, website berjalan dalam **mode demo** (data hanya di browser) untuk latihan.
