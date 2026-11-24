@@ -50,8 +50,11 @@
     ['Lemongrass Red Ginger 220 ml', 20000, 16150, 'Minuman', 'Lemongrass Red Ginger (220 ml)'],
     ['Lemon Sereh Tea 220 ml', 20000, 16150, 'Minuman', 'Lemon Sereh Tea (220 ml)'],
     ['Kopi', 18000, 9000, 'Minuman', 'Kopi'], ['Americano', 15000, 10000, 'Minuman', 'Americano'],
-    ['Fitbar Coklat', 10000, 7950, 'Snack', 'Fitbar Choco delight'], ['Fitbar Fruits', 10000, 7950, 'Snack', 'Fitbar fruits delight'],
-    ['Fitbar Tiramisu', 10000, 7950, 'Snack', 'Fitbar tiramisu delight']
+    ['Hilo Protein BerryFit', 15000, 12600, 'Minuman', 'Hilo Protein BerryFit'],
+    ['Nutrisari Jeruk Madu', 10000, 6600, 'Minuman', 'Nutrisari Jeruk Madu'],
+    ['Nutrisari Squeeze Orange', 10000, 6600, 'Minuman', 'Nutrisari Squeeze Orange'],
+    ['Nutrisari Jambu Biji', 10000, 6600, 'Minuman', 'Nutrisari Jambu Biji'],
+    ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi']
   ];
   var DB_KEY = 'pcc_demo_db_v1';
   function db() {

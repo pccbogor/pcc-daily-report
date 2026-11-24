@@ -474,9 +474,14 @@ var SEED_PRODUCTS = [
   ['Lemongrass Red Ginger 220 ml', 20000, 16150, 'Minuman', 'Lemongrass Red Ginger (220 ml)'],
   ['Lemon Sereh Tea 220 ml', 20000, 16150, 'Minuman', 'Lemon Sereh Tea (220 ml)'],
   ['Kopi', 18000, 9000, 'Minuman', 'Kopi'], ['Americano', 15000, 10000, 'Minuman', 'Americano'],
-  ['Fitbar Coklat', 10000, 7950, 'Snack', 'Fitbar Choco delight'], ['Fitbar Fruits', 10000, 7950, 'Snack', 'Fitbar fruits delight'],
-  ['Fitbar Tiramisu', 10000, 7950, 'Snack', 'Fitbar tiramisu delight']
+  ['Hilo Protein BerryFit', 15000, 12600, 'Minuman', 'Hilo Protein BerryFit'],
+  ['Nutrisari Jeruk Madu', 10000, 6600, 'Minuman', 'Nutrisari Jeruk Madu'],
+  ['Nutrisari Squeeze Orange', 10000, 6600, 'Minuman', 'Nutrisari Squeeze Orange'],
+  ['Nutrisari Jambu Biji', 10000, 6600, 'Minuman', 'Nutrisari Jambu Biji'],
+  ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi']
 ];
+// Products taken off the menu (kept in old reports, hidden from the form). See updateProdukNov2026().
+var RETIRED_PRODUCTS = ['Fitbar Coklat', 'Fitbar Fruits', 'Fitbar Tiramisu'];
 var SEED_CONFIG = [
   ['SHIFTS', 'Shift 1,Shift 2', 'Pilihan shift di form (pisahkan dengan koma)'],
   ['METHODS', 'BRI,BCA,Mandiri,AYO', 'Metode pembayaran'],
@@ -1742,6 +1747,48 @@ function addInventoryProducts() {
   if (current) rebuildInventoryMonth(month);
   Logger.log('Tab ditambahkan (' + added.length + '):\n' + added.join('\n'));
   return added;
+}
+
+/** From the editor, once (safe to run again): brings the live Master_Produk in line with SEED_PRODUCTS.
+ *  RETIRED_PRODUCTS get aktif = FALSE (old reports keep their names); seed products that are missing are
+ *  added after the last row of their grup, so the form and WhatsApp list keep the grouped order.
+ *  Existing rows (prices edited by the owner) are left as they are. Then stock tabs are added for the new items. */
+function updateProdukNov2026() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET.PRODUCTS);
+  if (!sh) throw new Error('Sheet "' + SHEET.PRODUCTS + '" tidak ada. Jalankan setup() dulu.');
+  var values = sh.getDataRange().getValues();
+  var headers = values[0];
+  var col = {};
+  headers.forEach(function (h, j) { col[h] = j; });
+  ['produk', 'harga', 'harga_modal', 'aktif', 'grup', 'label_wa'].forEach(function (h) {
+    if (!(h in col)) throw new Error('Kolom "' + h + '" tidak ada di ' + SHEET.PRODUCTS);
+  });
+  var key = function (s) { return String(s).trim().toLowerCase(); };
+  var rows = values.slice(1); // blank rows kept so nothing below them shifts out of place
+  var retired = RETIRED_PRODUCTS.map(key);
+  var log = [];
+  rows.forEach(function (r) {
+    if (retired.indexOf(key(r[col.produk])) >= 0 && String(r[col.aktif]).toUpperCase() !== 'FALSE') {
+      r[col.aktif] = false;
+      log.push('Nonaktif: ' + r[col.produk]);
+    }
+  });
+  SEED_PRODUCTS.forEach(function (p) {
+    if (rows.some(function (r) { return key(r[col.produk]) === key(p[0]); })) return;
+    var row = headers.map(function () { return ''; });
+    row[col.produk] = p[0]; row[col.harga] = p[1]; row[col.harga_modal] = p[2];
+    row[col.aktif] = true; row[col.grup] = p[3]; row[col.label_wa] = p[4];
+    var at = rows.length;
+    for (var i = rows.length - 1; i >= 0; i--) { if (String(rows[i][col.grup]) === p[3]) { at = i + 1; break; } }
+    rows.splice(at, 0, row);
+    log.push('Ditambah: ' + p[0] + ' (' + p[3] + ', jual ' + p[1] + ', modal ' + p[2] + ')');
+  });
+  if (rows.length) sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  if (PropertiesService.getScriptProperties().getProperty('INVENTORY_TEMPLATE_ID')) {
+    addInventoryProducts().forEach(function (a) { log.push('Tab stok: ' + a); });
+  }
+  Logger.log(log.length ? log.join('\n') : 'Master_Produk sudah sesuai, tidak ada perubahan.');
+  return log;
 }
 
 // =====================================================================
