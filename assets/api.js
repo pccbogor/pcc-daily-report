@@ -54,7 +54,8 @@
     ['Nutrisari Jeruk Madu', 10000, 6600, 'Minuman', 'Nutrisari Jeruk Madu'],
     ['Nutrisari Squeeze Orange', 10000, 6600, 'Minuman', 'Nutrisari Squeeze Orange'],
     ['Nutrisari Jambu Biji', 10000, 6600, 'Minuman', 'Nutrisari Jambu Biji'],
-    ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi']
+    ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi'],
+    ['L-Men Protein Bar Chocolate', 15000, 11100, 'Snack', 'L-Men Protein Bar Chocolate']
   ];
   var DB_KEY = 'pcc_demo_db_v1';
   function db() {

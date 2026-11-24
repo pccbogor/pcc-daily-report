@@ -80,9 +80,9 @@ env.ctx.setup();
 const rows = (name) => env.sheets[name].data.slice(1).filter((r) => r.some((v) => v !== ''));
 const col = (name, field) => env.ctx.HEADERS[name].indexOf(field);
 
-test('setup creates every sheet, seeds 31 products and the formula summary', () => {
+test('setup creates every sheet, seeds 32 products and the formula summary', () => {
   for (const n of ['Reports', 'Court_Bookings', 'Sales', 'Other_Income', 'Audit_Log', 'Master_Produk', 'Config', 'Daily_Summary', 'Archive_Index', 'Rekap Bulanan']) assert.ok(env.sheets[n], n);
-  assert.strictEqual(rows('Master_Produk').length, 31);
+  assert.strictEqual(rows('Master_Produk').length, 32);
   assert.ok(env.sheets.Daily_Summary.formulas['2,1'].includes('UNIQUE(FILTER('));
   assert.ok(env.sheets.Daily_Summary.formulas['2,3'].includes('"AYO"'));
 });
@@ -497,11 +497,11 @@ test('addInventoryProducts: a tab per drink/snack, 220 ml and 250 ml kept apart,
   const added = e14.ctx.addInventoryProducts();
   const T = e14.archives.templates.INVTPL;
   const names = T.getSheets().map((x) => x.getName());
-  ['Lestea 250 ml', 'Cinnamon Red Ginger 220 ml', 'Cinnamon Red Ginger 250 ml', 'Kopi', 'Americano', 'Hilo Protein BerryFit', 'Nutrisari Jeruk Madu', 'Nutrisari Squeeze Orange', 'Nutrisari Jambu Biji', 'L-Men Protein Bar Stroberi']
+  ['Lestea 250 ml', 'Cinnamon Red Ginger 220 ml', 'Cinnamon Red Ginger 250 ml', 'Kopi', 'Americano', 'Hilo Protein BerryFit', 'Nutrisari Jeruk Madu', 'Nutrisari Squeeze Orange', 'Nutrisari Jambu Biji', 'L-Men Protein Bar Stroberi', 'L-Men Protein Bar Chocolate']
     .forEach((n) => assert.ok(names.includes(n), 'template has tab ' + n));
   ['Raket', 'Sewa Bola', 'Sewa Handuk', 'Upgrade Raket'].forEach((n) => assert.ok(!names.includes(n), 'no stock tab for rental ' + n));
   assert.strictEqual(names.filter((n) => /pocari/i.test(n)).length, 1, 'Pocari Sweet keeps its existing tab');
-  assert.strictEqual(added.length, 36, '18 new tabs in the template and 18 in this month\'s file');
+  assert.strictEqual(added.length, 38, '19 new tabs in the template and 19 in this month\'s file');
   const lestea = T.getSheetByName('Lestea 250 ml');
   assert.ok(lestea.formulas['8,7'].includes('"Lestea 250 ml"'), 'price look-up points at the new product');
   assert.strictEqual(lestea.data[0][0], 'INVENTORY - LESTEA 250 ML');
@@ -522,26 +522,28 @@ test('updateProdukNov2026: Fitbar off the form, L-Men + Hilo + Nutrisari added i
   const H = e.ctx.HEADERS.Master_Produk;
   const ci = (h) => H.indexOf(h);
   // Make the sheet look like the live one before this change: old Fitbar rows, no new products, an owner-edited price.
-  const NEW = ['Hilo Protein BerryFit', 'Nutrisari Jeruk Madu', 'Nutrisari Squeeze Orange', 'Nutrisari Jambu Biji', 'L-Men Protein Bar Stroberi'];
+  const NEW = ['Hilo Protein BerryFit', 'Nutrisari Jeruk Madu', 'Nutrisari Squeeze Orange', 'Nutrisari Jambu Biji', 'L-Men Protein Bar Stroberi', 'L-Men Protein Bar Chocolate'];
   sh.data = sh.data.filter((r) => !NEW.includes(r[0]));
   sh.data.push(['Fitbar Coklat', 10000, 7950, true, 'Snack', 'Fitbar Choco delight'], ['Fitbar Fruits', 10000, 7950, true, 'Snack', 'Fitbar fruits delight'],
     ['Fitbar Tiramisu', 10000, 7950, true, 'Snack', 'Fitbar tiramisu delight']);
   sh.data.find((r) => r[0] === 'Kopi')[ci('harga')] = 20000;
   const log = e.ctx.updateProdukNov2026();
-  assert.strictEqual(log.length, 8, '3 retired + 5 added');
+  assert.strictEqual(log.length, 9, '3 retired + 6 added');
   const names = sh.data.slice(1).map((r) => r[0]);
-  assert.strictEqual(names.length, 34);
+  assert.strictEqual(names.length, 35);
   assert.strictEqual(names.indexOf('Hilo Protein BerryFit'), names.indexOf('Americano') + 1, 'drinks go after the last drink');
   assert.strictEqual(names.indexOf('L-Men Protein Bar Stroberi'), names.indexOf('Fitbar Tiramisu') + 1, 'snack goes after the last snack');
   const row = (n) => sh.data.find((r) => r[0] === n);
   assert.deepStrictEqual(row('L-Men Protein Bar Stroberi'), ['L-Men Protein Bar Stroberi', 15000, 11100, true, 'Snack', 'L-Men Protein Bar Stroberi']);
+  assert.strictEqual(names.indexOf('L-Men Protein Bar Chocolate'), names.indexOf('L-Men Protein Bar Stroberi') + 1);
+  assert.deepStrictEqual(row('L-Men Protein Bar Chocolate').slice(0, 5), ['L-Men Protein Bar Chocolate', 15000, 11100, true, 'Snack']);
   assert.deepStrictEqual(row('Nutrisari Jambu Biji').slice(0, 5), ['Nutrisari Jambu Biji', 10000, 6600, true, 'Minuman']);
   assert.strictEqual(row('Hilo Protein BerryFit')[ci('harga_modal')], 12600);
   assert.strictEqual(row('Kopi')[ci('harga')], 20000, 'owner-edited price untouched');
   const cfg = e.call({ action: 'config', pin: '1' }).data;
   const shown = cfg.products.map((p) => p.produk);
   assert.ok(!shown.some((n) => /fitbar/i.test(n)), 'no Fitbar on the form');
-  assert.deepStrictEqual(cfg.products.filter((p) => p.grup === 'Snack').map((p) => p.produk), ['L-Men Protein Bar Stroberi']);
+  assert.deepStrictEqual(cfg.products.filter((p) => p.grup === 'Snack').map((p) => p.produk), ['L-Men Protein Bar Stroberi', 'L-Men Protein Bar Chocolate']);
   NEW.forEach((n) => assert.ok(shown.includes(n), n + ' on the form'));
   assert.strictEqual(e.ctx.updateProdukNov2026().length, 0, 'second run changes nothing');
 });

@@ -67,7 +67,8 @@ var SEED_PRODUCTS = [
   ['Nutrisari Jeruk Madu', 10000, 6600, 'Minuman', 'Nutrisari Jeruk Madu'],
   ['Nutrisari Squeeze Orange', 10000, 6600, 'Minuman', 'Nutrisari Squeeze Orange'],
   ['Nutrisari Jambu Biji', 10000, 6600, 'Minuman', 'Nutrisari Jambu Biji'],
-  ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi']
+  ['L-Men Protein Bar Stroberi', 15000, 11100, 'Snack', 'L-Men Protein Bar Stroberi'],
+  ['L-Men Protein Bar Chocolate', 15000, 11100, 'Snack', 'L-Men Protein Bar Chocolate']
 ];
 // Products taken off the menu (kept in old reports, hidden from the form). See updateProdukNov2026().
 var RETIRED_PRODUCTS = ['Fitbar Coklat', 'Fitbar Fruits', 'Fitbar Tiramisu'];
